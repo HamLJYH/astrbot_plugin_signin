@@ -1,5 +1,5 @@
 """
-AstrBot 签到插件 
+AstrBot 签到插件 v1.0
 
 功能描述：
 - 每日签到、连续签到、积分加成
@@ -835,6 +835,7 @@ class SignInPlugin(Star):
 
 💸 其他指令:
   /转账 QQ号 金额  - 转账积分给其他用户（通过QQ号）
+  /重置数据        - 清除所有签到数据（管理员）
 
 ✨ 功能说明:
   • 每日签到可获得基础积分 + 连续加成 + 幸运奖励
@@ -849,6 +850,44 @@ class SignInPlugin(Star):
   • 转账请使用对方QQ号，不是昵称"""
 
         yield event.plain_result(msg)
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """检查发送者是否为 AstrBot 管理员"""
+        sender_id = event.get_sender_id()
+        # 从 AstrBot 配置中获取管理员列表
+        try:
+            cfg = self.context.get_config()
+            if cfg and hasattr(cfg, "admins_id"):
+                admins = cfg.admins_id
+                if isinstance(admins, list):
+                    return sender_id in admins
+                elif isinstance(admins, str):
+                    return sender_id == admins
+        except Exception:
+            pass
+        return False
+
+    @filter.command("重置数据")
+    @handle_errors
+    async def reset_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        """重置所有签到数据（仅管理员可用）"""
+        if not self._is_admin(event):
+            yield event.plain_result("🚫 权限不足！只有管理员才能使用此指令。")
+            return
+
+        if not self.user_data:
+            yield event.plain_result("📭 当前没有任何签到数据。")
+            return
+
+        user_count = len(self.user_data)
+        self.user_data.clear()
+        self._save_data()
+
+        yield event.plain_result(
+            f"🗑️  数据重置成功！\n"
+            f"已清除 {user_count} 位用户的签到记录。\n"
+            f"所有积分、连续天数、道具已归零。"
+        )
 
     async def terminate(self):
         """插件卸载时保存数据"""
