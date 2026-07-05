@@ -19,8 +19,11 @@ import random
 import re
 import functools
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, AsyncGenerator
+
+# 北京时间时区
+TZ_BEIJING = timezone(timedelta(hours=8))
 
 from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
@@ -196,15 +199,15 @@ class SignInPlugin(Star):
         return event.get_sender_name() or "匿名用户"
 
     def _get_today(self) -> str:
-        """获取当前日期（考虑重置时间）"""
-        now = datetime.now()
+        """获取当前日期（考虑重置时间，使用北京时间）"""
+        now = datetime.now(TZ_BEIJING)
         if now.hour < self.config.reset_hour:
             now = now - timedelta(days=1)
         return now.strftime("%Y-%m-%d")
 
     def _get_yesterday(self) -> str:
-        """获取昨天日期"""
-        today = datetime.strptime(self._get_today(), "%Y-%m-%d")
+        """获取昨天日期（使用北京时间）"""
+        today = datetime.strptime(self._get_today(), "%Y-%m-%d").replace(tzinfo=TZ_BEIJING)
         yesterday = today - timedelta(days=1)
         return yesterday.strftime("%Y-%m-%d")
 
