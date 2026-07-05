@@ -1,0 +1,68 @@
+{
+  "base_points": {
+    "description": "基础签到积分",
+    "type": "int",
+    "hint": "每日签到获得的基础积分",
+    "default": 10
+  },
+  "streak_bonus": {
+    "description": "连续签到加成",
+    "type": "bool",
+    "hint": "是否启用连续签到额外奖励",
+    "default": true
+  },
+  "streak_bonus_rate": {
+    "description": "连续签到加成比例",
+    "type": "float",
+    "hint": "每连续签到一天额外增加的积分比例（如0.1表示每天增加10%）",
+    "default": 0.1
+  },
+  "max_streak_bonus": {
+    "description": "最大连续签到加成倍数",
+    "type": "float",
+    "hint": "连续签到加成上限倍数",
+    "default": 2.0
+  },
+  "top_limit": {
+    "description": "排行榜显示数量",
+    "type": "int",
+    "hint": "积分排行榜显示的用户数量",
+    "default": 10
+  },
+  "reset_hour": {
+    "description": "签到重置时间（小时）",
+    "type": "int",
+    "hint": "每日签到的重置时间（0-23），默认5点",
+    "default": 5
+  },
+  "enable_rank": {
+    "description": "启用排行榜",
+    "type": "bool",
+    "hint": "是否启用积分排行榜功能",
+    "default": true
+  },
+  "lucky_draw": {
+    "description": "启用幸运抽奖",
+    "type": "bool",
+    "hint": "签到时是否触发随机幸运积分奖励",
+    "default": true
+  },
+  "lucky_draw_max": {
+    "description": "幸运抽奖最大额外积分",
+    "type": "int",
+    "hint": "幸运抽奖最多额外获得的积分",
+    "default": 50
+  },
+  "enable_shop": {
+    "description": "启用积分商店",
+    "type": "bool",
+    "hint": "是否启用积分商店功能",
+    "default": true
+  },
+  "enable_transfer": {
+    "description": "启用积分转账",
+    "type": "bool",
+    "hint": "是否允许用户之间转账积分",
+    "default": true
+  }
+}
