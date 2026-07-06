@@ -16,12 +16,17 @@
 - ⚙️ **灵活配置** - 通过 WebUI 配置各项参数
 - 🛡️ **错误处理** - 统一的错误处理机制，友好提示
 
-## 安装方法
+## 安装
 
-1. 将本插件文件夹放入 `AstrBot/data/plugins/` 目录下
-2. 确保目录名为 `astrbot_plugin_signin`
-3. 在 AstrBot WebUI 中重载插件
-4. （可选）在插件配置页面调整参数
+### 前置要求
+
+- AstrBot >= 4.26
+- Python >= 3.8
+
+### 安装步骤
+
+1. 在 AstrBot WebUI 中上传插件压缩包，或将插件文件夹复制到 AstrBot 的插件目录
+2. 在 AstrBot WebUI 中启用插件
 
 ## 目录结构
 
