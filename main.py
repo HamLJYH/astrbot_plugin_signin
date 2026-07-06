@@ -34,7 +34,7 @@ from astrbot.api import logger
 
 MAX_NICKNAME_LENGTH = 15
 SHOP_ITEMS = {
-    "1": {"name": "🎁 神秘礼盒", "price": 1, "desc": "随机获得 10-100 积分"},
+    "1": {"name": "🎁 神秘礼盒", "price": 50, "desc": "随机获得 10-100 积分"},
     "2": {"name": "🍀 幸运符", "price": 30, "desc": "下次签到积分翻倍（限1次）"},
     "3": {"name": "🔮 占卜卡", "price": 20, "desc": "查看今日运势"},
     "4": {"name": "💎 改名卡", "price": 100, "desc": "修改在排行榜中的显示名称"},
