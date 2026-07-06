@@ -4,9 +4,10 @@ AstrBot 签到插件 v1.1.2
 功能描述：
 - 每日签到、连续签到、积分加成
 - 积分排行榜
-- 积分商店（神秘礼盒、幸运符、占卜卡、改名卡、补签卡、抽奖券）
+- 积分商店（带每日限购）
 - 道具使用系统
 - 积分转账（通过QQ号）
+- 抽奖系统（含惩罚机制）
 
 作者: HamLJYH
 版本: 1.1.2
@@ -18,27 +19,26 @@ import json
 import random
 import re
 import functools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Any, AsyncGenerator
-
-# 北京时间时区
-TZ_BEIJING = timezone(timedelta(hours=8))
+from typing import Dict, Any, AsyncGenerator
 
 from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import logger
 
 
-# ==================== 常量定义 ====================
+# 北京时间时区
+TZ_BEIJING = timezone(timedelta(hours=8))
 
+# 常量
 MAX_NICKNAME_LENGTH = 15
 SHOP_ITEMS = {
     "1": {"name": "🎁 神秘礼盒", "price": 50, "desc": "随机获得 10-100 积分"},
     "2": {"name": "🍀 幸运符", "price": 30, "desc": "下次签到积分翻倍（限1次）"},
     "3": {"name": "🔮 占卜卡", "price": 20, "desc": "查看今日运势"},
     "4": {"name": "💎 改名卡", "price": 100, "desc": "修改在排行榜中的显示名称"},
-    "5": {"name": "🛡️  补签卡", "price": 80, "desc": "补签昨天，保持连续签到"},
+    "5": {"name": "🛡️ 补签卡", "price": 80, "desc": "补签昨天，保持连续签到"},
     "6": {"name": "🎲 抽奖券", "price": 20, "desc": "参与积分抽奖，大奖等你拿"},
 }
 
@@ -51,8 +51,6 @@ FORTUNES = {
 
 MILESTONES = [7, 30, 100, 365]
 
-
-# ==================== 配置模型 ====================
 
 @dataclass
 class SignInConfig:
@@ -71,7 +69,6 @@ class SignInConfig:
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "SignInConfig":
-        """从字典创建配置实例"""
         return cls(
             base_points=config.get("base_points", 10),
             streak_bonus=config.get("streak_bonus", True),
@@ -87,7 +84,6 @@ class SignInConfig:
         )
 
     def validate(self) -> bool:
-        """验证配置有效性"""
         if self.base_points < 0:
             raise ValueError("基础积分不能为负数")
         if self.streak_bonus_rate < 0:
@@ -101,13 +97,8 @@ class SignInConfig:
         return True
 
 
-# ==================== 错误处理装饰器 ====================
-
 def handle_errors(func):
-    """统一错误处理装饰器
-
-    捕获并处理函数执行过程中的各种异常，向用户返回友好的错误提示。
-    """
+    """统一错误处理装饰器"""
     @functools.wraps(func)
     async def wrapper(self, event: AstrMessageEvent, *args, **kwargs):
         try:
@@ -118,21 +109,29 @@ def handle_errors(func):
             yield event.plain_result(f"❌ 参数错误: {str(e)}")
         except KeyError as e:
             logger.warning(f"[{func.__name__}] 数据缺失: {e}")
-            yield event.plain_result(f"❌ 操作失败: 数据缺失")
+            yield event.plain_result("❌ 操作失败: 数据缺失")
         except Exception as e:
             error_type = type(e).__name__
             logger.error(f"[{func.__name__}] 执行失败 [{error_type}]: {e}", exc_info=True)
-            yield event.plain_result("❌ 操作失败，请稍后重试或联系管理员")
+            yield event.plain_result("❌ 操作失败，请稍后重试")
     return wrapper
 
-
-# ==================== 插件主类 ====================
 
 class SignInPlugin(Star):
     """签到插件主类"""
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict = None):
+        """初始化插件
+
+        Args:
+            context: AstrBot 上下文
+            config: 插件配置（由 AstrBot 根据 _conf_schema.json 自动传入）
+        """
         super().__init__(context)
+
+        # 加载插件配置（AstrBot 自动传入）
+        self.plugin_config = self._parse_config(config or {})
+        logger.info(f"[SignIn] 配置加载成功: base_points={self.plugin_config.base_points}, reset_hour={self.plugin_config.reset_hour}")
 
         # 数据持久化目录
         self.data_dir = os.path.join(
@@ -140,44 +139,23 @@ class SignInPlugin(Star):
             "data", "plugin_data", "astrbot_plugin_signin"
         )
         os.makedirs(self.data_dir, exist_ok=True)
-
         self.data_file = os.path.join(self.data_dir, "signin_data.json")
         self.user_data = self._load_data()
 
         logger.info("签到插件 v1.1.2 已加载")
 
-    @property
-    def config(self) -> SignInConfig:
-        """配置属性，每次访问都重新加载（支持热更新）"""
-        return self._load_config()
-
-    def _load_config(self) -> SignInConfig:
-        """安全加载插件配置"""
-        default_config = SignInConfig()
+    def _parse_config(self, config: dict) -> SignInConfig:
+        """解析插件配置"""
         try:
-            cfg = self.context.get_config()
-            if cfg is None:
-                return default_config
-
-            plugin_conf = getattr(cfg, "plugin_config", {})
-            if isinstance(plugin_conf, dict):
-                conf = plugin_conf.get("astrbot_plugin_signin", {})
-                if isinstance(conf, dict):
-                    merged = SignInConfig.from_dict(conf)
-                    merged.validate()
-                    return merged
+            cfg = SignInConfig.from_dict(config)
+            cfg.validate()
+            logger.info(f"[SignIn] 使用 WebUI 配置: {config}")
+            return cfg
         except Exception as e:
-            logger.warning(f"加载配置失败，使用默认配置: {e}")
-
-        return default_config
-
-    def _refresh_config(self) -> SignInConfig:
-        """刷新配置（每次指令执行前调用）"""
-        self.config = self._load_config()
-        return self.config
+            logger.warning(f"[SignIn] 配置解析失败，使用默认配置: {e}")
+            return SignInConfig()
 
     def _load_data(self) -> Dict[str, Any]:
-        """加载签到数据"""
         if os.path.exists(self.data_file):
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
@@ -188,7 +166,6 @@ class SignInPlugin(Star):
         return {}
 
     def _save_data(self):
-        """保存签到数据"""
         try:
             with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(self.user_data, f, ensure_ascii=False, indent=2)
@@ -196,30 +173,25 @@ class SignInPlugin(Star):
             logger.error(f"保存签到数据失败: {e}")
 
     def _get_user_id(self, event: AstrMessageEvent) -> str:
-        """获取用户唯一标识"""
         sender_id = event.get_sender_id()
         platform = event.get_platform_name()
         return f"{platform}:{sender_id}"
 
     def _get_user_name(self, event: AstrMessageEvent) -> str:
-        """获取用户显示名称"""
         return event.get_sender_name() or "匿名用户"
 
     def _get_today(self) -> str:
-        """获取当前日期（考虑重置时间，使用北京时间）"""
         now = datetime.now(TZ_BEIJING)
-        if now.hour < self.config.reset_hour:
+        if now.hour < self.plugin_config.reset_hour:
             now = now - timedelta(days=1)
         return now.strftime("%Y-%m-%d")
 
     def _get_yesterday(self) -> str:
-        """获取昨天日期（使用北京时间）"""
         today = datetime.strptime(self._get_today(), "%Y-%m-%d").replace(tzinfo=TZ_BEIJING)
         yesterday = today - timedelta(days=1)
         return yesterday.strftime("%Y-%m-%d")
 
     def _ensure_user(self, user_id: str, user_name: str) -> Dict[str, Any]:
-        """确保用户数据存在，返回用户数据"""
         if user_id not in self.user_data:
             self.user_data[user_id] = {
                 "name": user_name,
@@ -232,705 +204,54 @@ class SignInPlugin(Star):
                 "buffs": {},
                 "custom_name": None,
                 "fortune_today": None,
-                "daily_buy": {},  # 每日购买记录: {"item_id": "date"}
+                "daily_buy": {},
             }
-        # 兼容旧数据：如果没有 daily_buy 字段，初始化
         if "daily_buy" not in self.user_data[user_id]:
             self.user_data[user_id]["daily_buy"] = {}
         return self.user_data[user_id]
 
-    def _check_daily_limit(self, user: Dict[str, Any], item_id: str) -> bool:
-        """检查是否超过每日购买限制
-
-        Returns:
-            True: 可以购买（未超过限制或已刷新）
-            False: 已达今日上限
-        """
-        today = self._get_today()
-        daily_buy = user.get("daily_buy", {})
-
-        # 如果记录不是今天的，说明已刷新
-        last_buy_date = daily_buy.get(item_id, "")
-        if last_buy_date != today:
-            return True
-
-        return False
-
-    def _record_daily_buy(self, user: Dict[str, Any], item_id: str):
-        """记录今日购买"""
-        today = self._get_today()
-        if "daily_buy" not in user:
-            user["daily_buy"] = {}
-        user["daily_buy"][item_id] = today
-
     def _get_display_name(self, user_id: str) -> str:
-        """获取用户显示名称"""
         user = self.user_data.get(user_id, {})
         return user.get("custom_name") or user.get("name", "匿名用户")
 
     def _calculate_points(self, streak: int, user: Dict[str, Any]) -> tuple:
-        """计算签到积分"""
-        base_points = self.config.base_points
-
-        # 连续签到加成
+        base_points = self.plugin_config.base_points
         streak_bonus = 0
-        if self.config.streak_bonus and streak > 1:
-            rate = self.config.streak_bonus_rate
-            max_multiplier = self.config.max_streak_bonus
+        if self.plugin_config.streak_bonus and streak > 1:
+            rate = self.plugin_config.streak_bonus_rate
+            max_multiplier = self.plugin_config.max_streak_bonus
             multiplier = 1 + min((streak - 1) * rate, max_multiplier - 1)
             streak_bonus = int(base_points * (multiplier - 1))
-
-        # 幸运抽奖
         lucky_points = 0
-        if self.config.lucky_draw:
+        if self.plugin_config.lucky_draw:
             if random.random() < 0.2:
-                lucky_points = random.randint(1, self.config.lucky_draw_max)
-
+                lucky_points = random.randint(1, self.plugin_config.lucky_draw_max)
         total = base_points + streak_bonus + lucky_points
-
-        # buff：积分翻倍
         buffs = user.get("buffs", {})
         if buffs.get("double_next", False):
             total *= 2
             buffs["double_next"] = False
             user["buffs"] = buffs
-
         return total, base_points, streak_bonus, lucky_points
 
     def _get_rank_emoji(self, rank: int) -> str:
-        """获取排名对应的emoji"""
         emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
         return emojis.get(rank, f"#{rank}")
 
-    # ==================== 签到指令 ====================
-
-    @filter.command("签到")
-    @handle_errors
-    async def signin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """每日签到"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
+    def _check_daily_limit(self, user: Dict[str, Any], item_id: str) -> bool:
         today = self._get_today()
+        daily_buy = user.get("daily_buy", {})
+        last_buy_date = daily_buy.get(item_id, "")
+        return last_buy_date != today
 
-        user = self._ensure_user(user_id, user_name)
-        user["name"] = user_name
-
-        if user["last_signin"] == today:
-            yield event.plain_result(
-                f"⏰ {self._get_display_name(user_id)}，你今天已经签到过了！\n"
-                f"📊 当前积分: {user['total_points']}\n"
-                f"🔥 连续签到: {user['streak']} 天"
-            )
-            return
-
-        yesterday = self._get_yesterday()
-        if user["last_signin"] == yesterday:
-            user["streak"] += 1
-        else:
-            if user["streak"] > 0:
-                logger.info(f"用户 {user_name} 连续签到中断，之前 {user['streak']} 天")
-            user["streak"] = 1
-
-        total_points, base, streak_bonus, lucky = self._calculate_points(
-            user["streak"], user
-        )
-
-        user["total_points"] += total_points
-        user["total_signins"] += 1
-        user["last_signin"] = today
-        user["history"].append({
-            "date": today,
-            "points": total_points,
-            "streak": user["streak"]
-        })
-
-        # 限制历史记录
-        if len(user["history"]) > 100:
-            user["history"] = user["history"][-100:]
-
-        user["fortune_today"] = None
-        self._save_data()
-
-        msg_parts = [
-            f"✅ 签到成功！{self._get_display_name(user_id)}",
-            f"",
-            f"📅 今日日期: {today}",
-            f"⭐ 获得积分: +{total_points}",
-            f"   ├ 基础积分: +{base}",
-        ]
-
-        if streak_bonus > 0:
-            msg_parts.append(f"   ├ 连续加成: +{streak_bonus} (连续{user['streak']}天)")
-
-        if lucky > 0:
-            msg_parts.append(f"   └ 🎉 幸运奖励: +{lucky}")
-
-        msg_parts.extend([
-            f"",
-            f"💰 总积分: {user['total_points']}",
-            f"🔥 连续签到: {user['streak']} 天",
-            f"📈 累计签到: {user['total_signins']} 天"
-        ])
-
-        for m in MILESTONES:
-            if user["streak"] == m:
-                msg_parts.append(f"")
-                msg_parts.append(f"🎊 恭喜！你已连续签到 {m} 天！")
-                break
-
-        yield event.plain_result("\n".join(msg_parts))
-
-    @filter.command("签到信息")
-    @handle_errors
-    async def signin_info(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """查看个人签到信息"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
+    def _record_daily_buy(self, user: Dict[str, Any], item_id: str):
         today = self._get_today()
-
-        user = self._ensure_user(user_id, user_name)
-        signed_today = user["last_signin"] == today
-
-        all_users = sorted(
-            self.user_data.items(),
-            key=lambda x: x[1]["total_points"],
-            reverse=True
-        )
-        rank = next((i + 1 for i, (uid, _) in enumerate(all_users) if uid == user_id), "-")
-
-        current_month = today[:7]
-        month_count = sum(1 for h in user["history"] if h["date"].startswith(current_month))
-
-        items = user.get("items", {})
-        item_str = ""
-        if items:
-            item_list = []
-            for item_id, count in items.items():
-                item_name = SHOP_ITEMS.get(item_id, {}).get("name", f"道具{item_id}")
-                item_list.append(f"{item_name} x{count}")
-            item_str = "\n🎒 背包: " + ", ".join(item_list)
-
-        status = "✅ 已签到" if signed_today else "❌ 未签到"
-
-        msg = (
-            f"📋 {self._get_display_name(user_id)} 的签到信息\n\n"
-            f"📊 签到状态: {status}\n"
-            f"💰 总积分: {user['total_points']}\n"
-            f"🏆 积分排名: 第 {rank} 名\n"
-            f"🔥 连续签到: {user['streak']} 天\n"
-            f"📈 累计签到: {user['total_signins']} 天\n"
-            f"📅 本月签到: {month_count} 天\n"
-            f"🗓️  最后签到: {user['last_signin'] or '无记录'}"
-            f"{item_str}"
-        )
-
-        yield event.plain_result(msg)
-
-    @filter.command("签到排行")
-    @handle_errors
-    async def signin_rank(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """查看积分排行榜"""
-        if not self.config.enable_rank:
-            yield event.plain_result("排行榜功能已关闭。")
-            return
-
-        if not self.user_data:
-            yield event.plain_result("暂无签到数据，快来成为第一个签到的人吧！")
-            return
-
-        limit = self.config.top_limit
-
-        sorted_users = sorted(
-            self.user_data.items(),
-            key=lambda x: x[1]["total_points"],
-            reverse=True
-        )[:limit]
-
-        msg_lines = ["🏆 签到积分排行榜 🏆", ""]
-
-        for i, (user_id, user) in enumerate(sorted_users, 1):
-            emoji = self._get_rank_emoji(i)
-            name = self._get_display_name(user_id)[:10]
-            msg_lines.append(
-                f"{emoji} {name:<12} 积分: {user['total_points']:>6}  连续: {user['streak']:>3}天"
-            )
-
-        msg_lines.append("")
-        msg_lines.append(f"📊 共 {len(self.user_data)} 位用户参与签到")
-
-        yield event.plain_result("\n".join(msg_lines))
-
-    # ==================== 积分商店 ====================
-
-    @filter.command("商店")
-    @handle_errors
-    async def shop(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """查看积分商店"""
-        if not self.config.enable_shop:
-            yield event.plain_result("积分商店功能已关闭。")
-            return
-
-        msg_lines = ["🏪 积分商店 🏪", ""]
-
-        limit_items = {"1": "【每日限购1个】", "6": "【每日限购1个】"}
-        for item_id, item in SHOP_ITEMS.items():
-            limit_tag = limit_items.get(item_id, "")
-            msg_lines.append(
-                f"[{item_id}] {item['name']} {limit_tag}\n"
-                f"    💰 价格: {item['price']} 积分\n"
-                f"    📖 {item['desc']}"
-            )
-
-        msg_lines.append("")
-        msg_lines.append("使用 /购买 <编号> 来购买商品")
-
-        yield event.plain_result("\n".join(msg_lines))
-
-    @filter.command("购买")
-    @handle_errors
-    async def buy(self, event: AstrMessageEvent, item_id: int = None) -> AsyncGenerator[Any, None]:
-        """购买商店商品"""
-        if not self.config.enable_shop:
-            yield event.plain_result("积分商店功能已关闭。")
-            return
-
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        # 如果参数缺失，从消息内容解析
-        if item_id is None:
-            message_text = event.message_str or ""
-            match = re.search(r"/购买\s+(\d+)", message_text)
-            if match:
-                item_id = int(match.group(1))
-
-        if item_id is None:
-            yield event.plain_result("❌ 请指定商品编号，如 /购买 1")
-            return
-
-        # 转为字符串键
-        item_id_str = str(item_id)
-        item = SHOP_ITEMS.get(item_id_str)
-        if not item:
-            yield event.plain_result("❌ 商品编号不存在，请使用 /商店 查看商品列表。")
-            return
-
-        # 检查每日限购（抽奖券和神秘礼盒）
-        limit_items = {"1": "神秘礼盒", "6": "抽奖券"}
-        if item_id_str in limit_items:
-            if not self._check_daily_limit(user, item_id_str):
-                yield event.plain_result(
-                    f"🚫 今日已购买过 {limit_items[item_id_str]} 了！\n"
-                    f"每天限购1个，凌晨{self.config.reset_hour}点刷新。"
-                )
-                return
-
-        if user["total_points"] < item["price"]:
-            yield event.plain_result(
-                f"❌ 积分不足！\n"
-                f"商品: {item['name']} (需要 {item['price']} 积分)\n"
-                f"你的积分: {user['total_points']}"
-            )
-            return
-
-        user["total_points"] -= item["price"]
-
-        # 记录限购
-        if item_id_str in limit_items:
-            self._record_daily_buy(user, item_id_str)
-
-        result_msg = f"✅ 购买成功！\n\n{item['name']}\n"
-
-        if item_id_str == "1":  # 神秘礼盒
-            reward = random.randint(10, 100)
-            user["total_points"] += reward
-            result_msg += f"🎁 打开礼盒获得 {reward} 积分！"
-
-        elif item_id_str == "2":  # 幸运符
-            buffs = user.get("buffs", {})
-            buffs["double_next"] = True
-            user["buffs"] = buffs
-            result_msg += "🍀 下次签到积分翻倍已生效！"
-
-        elif item_id_str == "3":  # 占卜卡
-            result_msg += "🔮 请使用 /占卜 查看今日运势"
-            items = user.get("items", {})
-            items["3"] = items.get("3", 0) + 1
-            user["items"] = items
-
-        elif item_id_str == "4":  # 改名卡
-            result_msg += "💎 请使用 /改名 <新名称> 修改显示名"
-            items = user.get("items", {})
-            items["4"] = items.get("4", 0) + 1
-            user["items"] = items
-
-        elif item_id_str == "5":  # 补签卡
-            result_msg += "🛡️  请使用 /补签 来补签昨天"
-            items = user.get("items", {})
-            items["5"] = items.get("5", 0) + 1
-            user["items"] = items
-
-        elif item_id_str == "6":  # 抽奖券
-            result_msg += "🎲 请使用 /抽奖 参与积分抽奖"
-            items = user.get("items", {})
-            items["6"] = items.get("6", 0) + 1
-            user["items"] = items
-
-        self._save_data()
-        result_msg += f"\n\n💰 剩余积分: {user['total_points']}"
-        yield event.plain_result(result_msg)
-
-    # ==================== 道具使用 ====================
-
-    @filter.command("占卜")
-    @handle_errors
-    async def fortune(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """今日运势占卜"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        items = user.get("items", {})
-        if items.get("3", 0) <= 0:
-            yield event.plain_result("🔮 你没有占卜卡，去 /商店 购买一张吧！")
-            return
-
-        items["3"] -= 1
-        user["items"] = items
-
-        today = self._get_today()
-        if user.get("fortune_today") and user["fortune_today"].get("date") == today:
-            fortune = user["fortune_today"]
-        else:
-            level = random.choices(
-                ["大吉", "吉", "中", "凶"],
-                weights=[15, 35, 40, 10]
-            )[0]
-            desc = random.choice(FORTUNES[level])
-            lucky_num = random.randint(1, 99)
-            lucky_color = random.choice(["红", "黄", "蓝", "绿", "紫", "黑", "白"])
-            lucky_dir = random.choice(["东", "南", "西", "北", "东南", "西北", "东北", "西南"])
-
-            fortune = {
-                "date": today,
-                "level": level,
-                "desc": desc,
-                "lucky_num": lucky_num,
-                "lucky_color": lucky_color,
-                "lucky_dir": lucky_dir
-            }
-            user["fortune_today"] = fortune
-
-        self._save_data()
-
-        emojis = {"大吉": "🌟", "吉": "✨", "中": "☁️", "凶": "⚡"}
-
-        msg = (
-            f"🔮 {self._get_display_name(user_id)} 的今日运势\n\n"
-            f"{emojis[fortune['level']]} 运势: {fortune['level']} - {fortune['desc']}\n"
-            f"🔢 幸运数字: {fortune['lucky_num']}\n"
-            f"🎨 幸运色: {fortune['lucky_color']}\n"
-            f"🧭 幸运方位: {fortune['lucky_dir']}"
-        )
-
-        yield event.plain_result(msg)
-
-    @filter.command("改名")
-    @handle_errors
-    async def rename(self, event: AstrMessageEvent, new_name: str = None) -> AsyncGenerator[Any, None]:
-        """使用改名卡修改显示名称"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        # 从消息内容解析名称
-        if new_name is None:
-            message_text = event.message_str or ""
-            match = re.search(r"/改名\s+(.+)", message_text)
-            if match:
-                new_name = match.group(1).strip()
-
-        items = user.get("items", {})
-        if items.get("4", 0) <= 0:
-            yield event.plain_result("💎 你没有改名卡，去 /商店 购买一张吧！")
-            return
-
-        if not new_name or len(new_name) > MAX_NICKNAME_LENGTH:
-            yield event.plain_result(f"❌ 名称不能为空，且不能超过{MAX_NICKNAME_LENGTH}个字符。")
-            return
-
-        items["4"] -= 1
-        user["items"] = items
-        old_name = user.get("custom_name") or user["name"]
-        user["custom_name"] = new_name
-
-        self._save_data()
-
-        yield event.plain_result(
-            f"💎 改名成功！\n"
-            f"{old_name} → {new_name}\n"
-            f"排行榜中已更新显示。"
-        )
-
-    @filter.command("补签")
-    @handle_errors
-    async def makeup_sign(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """使用补签卡补签昨天"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        items = user.get("items", {})
-        if items.get("5", 0) <= 0:
-            yield event.plain_result("🛡️  你没有补签卡，去 /商店 购买一张吧！")
-            return
-
-        today = self._get_today()
-        yesterday = self._get_yesterday()
-
-        if user["last_signin"] == today:
-            yield event.plain_result("✅ 你今天已经签到了，不需要补签！")
-            return
-
-        if user["last_signin"] == yesterday:
-            yield event.plain_result("✅ 你昨天已经签到了，不需要补签！")
-            return
-
-        items["5"] -= 1
-        user["items"] = items
-
-        before_yesterday = (datetime.strptime(yesterday, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        if user.get("last_signin") == before_yesterday or user.get("streak", 0) > 0:
-            user["streak"] = user.get("streak", 0) + 1
-        else:
-            user["streak"] = 1
-
-        user["last_signin"] = yesterday
-        user["total_signins"] += 1
-        user["history"].append({
-            "date": yesterday,
-            "points": 0,
-            "streak": user["streak"],
-            "makeup": True
-        })
-
-        self._save_data()
-
-        yield event.plain_result(
-            f"🛡️  补签成功！\n"
-            f"📅 补签日期: {yesterday}\n"
-            f"🔥 当前连续: {user['streak']} 天\n"
-            f"⚠️ 补签不获得积分，仅保持连续天数"
-        )
-
-    @filter.command("抽奖")
-    @handle_errors
-    async def lottery(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """使用抽奖券参与积分抽奖（含惩罚机制）"""
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        items = user.get("items", {})
-        if items.get("6", 0) <= 0:
-            yield event.plain_result("🎲 你没有抽奖券，去 /商店 购买一张吧！")
-            return
-
-        items["6"] -= 1
-        user["items"] = items
-
-        # 奖池：降低大奖概率，增加惩罚
-        prizes = [
-            ("💸 谢谢参与", 0, 0.25),
-            ("🪙 小奖", random.randint(5, 20), 0.30),
-            ("💰 中奖", random.randint(30, 80), 0.20),
-            ("💎 大奖", random.randint(100, 200), 0.04),
-            ("👑 特等奖", random.randint(300, 500), 0.01),
-            ("⚡ 小惩罚", -random.randint(5, 15), 0.12),
-            ("💀 大惩罚", -random.randint(20, 50), 0.08),
-        ]
-
-        r = random.random()
-        cumulative = 0
-        prize = prizes[0]
-        for p in prizes:
-            cumulative += p[2]
-            if r <= cumulative:
-                prize = p
-                break
-
-        name, points, _ = prize
-
-        # 应用积分变动
-        old_points = user["total_points"]
-        user["total_points"] += points
-
-        # 确保积分不会扣成负数
-        if user["total_points"] < 0:
-            user["total_points"] = 0
-
-        self._save_data()
-
-        msg_lines = ["🎲 抽奖结果", ""]
-
-        if points > 0:
-            msg_lines.append(f"🎁 {name} +{points} 积分！")
-        elif points < 0:
-            actual_deducted = old_points - user["total_points"]
-            msg_lines.append(f"💥 {name} -{actual_deducted} 积分！")
-            if user["total_points"] == 0:
-                msg_lines.append("😱 积分被扣光了！")
-        else:
-            msg_lines.append(f"🎁 {name}")
-
-        msg_lines.append("")
-        msg_lines.append(f"💰 当前积分: {user['total_points']}")
-
-        yield event.plain_result("\n".join(msg_lines))
-
-    # ==================== 积分转账 ====================
-
-    @filter.command("转账")
-    @filter.command("转帐")
-    @handle_errors
-    async def transfer(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """转账积分给其他用户（通过QQ号）
-
-        用法: /转账 QQ号 金额
-        例如: /转账 123456789 100
-        """
-        if not self.config.enable_transfer:
-            yield event.plain_result("积分转账功能已关闭。")
-            return
-
-        user_id = self._get_user_id(event)
-        user_name = self._get_user_name(event)
-
-        user = self._ensure_user(user_id, user_name)
-
-        # 从消息内容解析参数（使用正则，更健壮）
-        message_text = event.message_str or ""
-
-        # 匹配 /转账 或 /转帐 后面跟着QQ号和金额
-        match = re.search(r"/(?:转账|转帐)\s+(\d+)\s+(\d+)", message_text)
-        if not match:
-            yield event.plain_result(
-                "❌ 参数格式错误！\n"
-                "用法: /转账 QQ号 金额\n"
-                "例如: /转账 123456789 100\n\n"
-                "💡 提示: 请使用对方的QQ号，不是昵称"
-            )
-            return
-
-        target_qq = match.group(1)
-        amount_str = match.group(2)
-
-        # 解析金额
-        try:
-            amount = int(amount_str)
-        except ValueError:
-            yield event.plain_result("❌ 金额格式错误，请输入数字。")
-            return
-
-        if amount <= 0:
-            yield event.plain_result("❌ 转账金额必须大于0。")
-            return
-
-        if user["total_points"] < amount:
-            yield event.plain_result(
-                f"❌ 积分不足！\n"
-                f"你的积分: {user['total_points']}\n"
-                f"转账金额: {amount}"
-            )
-            return
-
-        # 通过QQ号查找目标用户
-        target_id = None
-        target_display_name = None
-
-        for uid, u in self.user_data.items():
-            qq_part = uid.split(":")[-1] if ":" in uid else uid
-            if qq_part == target_qq:
-                target_id = uid
-                target_display_name = self._get_display_name(uid)
-                break
-
-        if not target_id:
-            yield event.plain_result(
-                f"❌ 未找到QQ号为 '{target_qq}' 的用户。\n"
-                f"对方需要先使用 /签到 注册账号。"
-            )
-            return
-
-        if target_id == user_id:
-            yield event.plain_result("❌ 不能转账给自己！")
-            return
-
-        user["total_points"] -= amount
-        self.user_data[target_id]["total_points"] += amount
-
-        self._save_data()
-
-        yield event.plain_result(
-            f"💸 转账成功！\n"
-            f"从: {self._get_display_name(user_id)}\n"
-            f"到: {target_display_name} (QQ:{target_qq})\n"
-            f"金额: {amount} 积分\n"
-            f"你的剩余积分: {user['total_points']}"
-        )
-
-    # ==================== 帮助 ====================
-
-    @filter.command("签到帮助")
-    @handle_errors
-    async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """查看签到插件帮助"""
-        msg = """📖 签到插件 v1..1.2 使用帮助
-
-📝 签到指令:
-  /签到          - 每日签到，获取积分
-  /签到信息      - 查看个人签到详情
-  /签到排行      - 查看积分排行榜
-
-🛒 商店指令:
-  /商店          - 查看积分商店商品
-  /购买 <编号>   - 购买商品（如 /购买 1）
-
-🎮 道具指令:
-  /占卜          - 使用占卜卡查看今日运势
-  /改名 <名称>   - 使用改名卡修改显示名
-  /补签          - 使用补签卡补签昨天
-  /抽奖          - 使用抽奖券参与积分抽奖
-
-💸 其他指令:
-  /转账 QQ号 金额  - 转账积分给其他用户（通过QQ号）
-  /重置数据        - 清除所有签到数据（管理员）
-
-✨ 功能说明:
-  • 每日签到可获得基础积分 + 连续加成 + 幸运奖励
-  • 积分可在商店购买道具：礼盒、幸运符、占卜卡、改名卡、补签卡、抽奖券
-  • 连续签到加成有上限，断签会重置天数
-  • 数据自动保存，重启不丢失
-
-💡 提示:
-  • 签到重置时间默认凌晨5点，可在配置中调整
-  • 使用 /商店 查看所有可购买道具
-  • 改名卡可以修改排行榜中的显示名称
-  • 转账请使用对方QQ号，不是昵称"""
-
-        yield event.plain_result(msg)
+        if "daily_buy" not in user:
+            user["daily_buy"] = {}
+        user["daily_buy"][item_id] = today
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
-        """检查发送者是否为 AstrBot 管理员"""
         sender_id = event.get_sender_id()
-        # 从 AstrBot 配置中获取管理员列表
         try:
             cfg = self.context.get_config()
             if cfg and hasattr(cfg, "admins_id"):
@@ -943,29 +264,450 @@ class SignInPlugin(Star):
             pass
         return False
 
+    @filter.command("签到")
+    @handle_errors
+    async def signin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        today = self._get_today()
+        user = self._ensure_user(user_id, user_name)
+        user["name"] = user_name
+        if user["last_signin"] == today:
+            yield event.plain_result(
+                f"⏰ {self._get_display_name(user_id)}，你今天已经签到过了！\n"
+                f"📊 当前积分: {user['total_points']}\n"
+                f"🔥 连续签到: {user['streak']} 天"
+            )
+            return
+        yesterday = self._get_yesterday()
+        if user["last_signin"] == yesterday:
+            user["streak"] += 1
+        else:
+            if user["streak"] > 0:
+                logger.info(f"用户 {user_name} 连续签到中断")
+            user["streak"] = 1
+        total_points, base, streak_bonus, lucky = self._calculate_points(user["streak"], user)
+        user["total_points"] += total_points
+        user["total_signins"] += 1
+        user["last_signin"] = today
+        user["history"].append({"date": today, "points": total_points, "streak": user["streak"]})
+        if len(user["history"]) > 100:
+            user["history"] = user["history"][-100:]
+        user["fortune_today"] = None
+        self._save_data()
+        msg_parts = [
+            f"✅ 签到成功！{self._get_display_name(user_id)}",
+            "",
+            f"📅 今日日期: {today}",
+            f"⭐ 获得积分: +{total_points}",
+            f"   ├ 基础积分: +{base}",
+        ]
+        if streak_bonus > 0:
+            msg_parts.append(f"   ├ 连续加成: +{streak_bonus} (连续{user['streak']}天)")
+        if lucky > 0:
+            msg_parts.append(f"   └ 🎉 幸运奖励: +{lucky}")
+        msg_parts.extend([
+            "",
+            f"💰 总积分: {user['total_points']}",
+            f"🔥 连续签到: {user['streak']} 天",
+            f"📈 累计签到: {user['total_signins']} 天"
+        ])
+        for m in MILESTONES:
+            if user["streak"] == m:
+                msg_parts.extend(["", f"🎊 恭喜！你已连续签到 {m} 天！"])
+                break
+        yield event.plain_result("\n".join(msg_parts))
+
+    @filter.command("签到信息")
+    @handle_errors
+    async def signin_info(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        today = self._get_today()
+        user = self._ensure_user(user_id, user_name)
+        signed_today = user["last_signin"] == today
+        all_users = sorted(self.user_data.items(), key=lambda x: x[1]["total_points"], reverse=True)
+        rank = next((i + 1 for i, (uid, _) in enumerate(all_users) if uid == user_id), "-")
+        current_month = today[:7]
+        month_count = sum(1 for h in user["history"] if h["date"].startswith(current_month))
+        items = user.get("items", {})
+        item_str = ""
+        if items:
+            item_list = []
+            for item_id, count in items.items():
+                item_name = SHOP_ITEMS.get(item_id, {}).get("name", f"道具{item_id}")
+                item_list.append(f"{item_name} x{count}")
+            item_str = "\n🎒 背包: " + ", ".join(item_list)
+        status = "✅ 已签到" if signed_today else "❌ 未签到"
+        msg = (
+            f"📋 {self._get_display_name(user_id)} 的签到信息\n\n"
+            f"📊 签到状态: {status}\n"
+            f"💰 总积分: {user['total_points']}\n"
+            f"🏆 积分排名: 第 {rank} 名\n"
+            f"🔥 连续签到: {user['streak']} 天\n"
+            f"📈 累计签到: {user['total_signins']} 天\n"
+            f"📅 本月签到: {month_count} 天\n"
+            f"🗓️  最后签到: {user['last_signin'] or '无记录'}"
+            f"{item_str}"
+        )
+        yield event.plain_result(msg)
+
+    @filter.command("签到排行")
+    @handle_errors
+    async def signin_rank(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        if not self.plugin_config.enable_rank:
+            yield event.plain_result("排行榜功能已关闭。")
+            return
+        if not self.user_data:
+            yield event.plain_result("暂无签到数据，快来成为第一个签到的人吧！")
+            return
+        limit = self.plugin_config.top_limit
+        sorted_users = sorted(self.user_data.items(), key=lambda x: x[1]["total_points"], reverse=True)[:limit]
+        msg_lines = ["🏆 签到积分排行榜 🏆", ""]
+        for i, (user_id, user) in enumerate(sorted_users, 1):
+            emoji = self._get_rank_emoji(i)
+            name = self._get_display_name(user_id)[:10]
+            msg_lines.append(f"{emoji} {name:<12} 积分: {user['total_points']:>6}  连续: {user['streak']:>3}天")
+        msg_lines.extend(["", f"📊 共 {len(self.user_data)} 位用户参与签到"])
+        yield event.plain_result("\n".join(msg_lines))
+
+    @filter.command("商店")
+    @handle_errors
+    async def shop(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        if not self.plugin_config.enable_shop:
+            yield event.plain_result("积分商店功能已关闭。")
+            return
+        msg_lines = ["🏪 积分商店 🏪", ""]
+        limit_items = {"1": "【每日限购1个】", "6": "【每日限购1个】"}
+        for item_id, item in SHOP_ITEMS.items():
+            limit_tag = limit_items.get(item_id, "")
+            msg_lines.append(f"[{item_id}] {item['name']} {limit_tag}\n    💰 价格: {item['price']} 积分\n    📖 {item['desc']}")
+        msg_lines.extend(["", "使用 /购买 <编号> 来购买商品"])
+        yield event.plain_result("\n".join(msg_lines))
+
+    @filter.command("购买")
+    @handle_errors
+    async def buy(self, event: AstrMessageEvent, item_id: int = None) -> AsyncGenerator[Any, None]:
+        if not self.plugin_config.enable_shop:
+            yield event.plain_result("积分商店功能已关闭。")
+            return
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        if item_id is None:
+            message_text = event.message_str or ""
+            match = re.search(r"/购买\s+(\d+)", message_text)
+            if match:
+                item_id = int(match.group(1))
+        if item_id is None:
+            yield event.plain_result("❌ 请指定商品编号，如 /购买 1")
+            return
+        item_id_str = str(item_id)
+        item = SHOP_ITEMS.get(item_id_str)
+        if not item:
+            yield event.plain_result("❌ 商品编号不存在，请使用 /商店 查看商品列表。")
+            return
+        limit_items = {"1": "神秘礼盒", "6": "抽奖券"}
+        if item_id_str in limit_items:
+            if not self._check_daily_limit(user, item_id_str):
+                yield event.plain_result(
+                    f"🚫 今日已购买过 {limit_items[item_id_str]} 了！\n"
+                    f"每天限购1个，凌晨{self.plugin_config.reset_hour}点刷新。"
+                )
+                return
+        if user["total_points"] < item["price"]:
+            yield event.plain_result(
+                f"❌ 积分不足！\n商品: {item['name']} (需要 {item['price']} 积分)\n"
+                f"你的积分: {user['total_points']}"
+            )
+            return
+        user["total_points"] -= item["price"]
+        if item_id_str in limit_items:
+            self._record_daily_buy(user, item_id_str)
+        result_msg = f"✅ 购买成功！\n\n{item['name']}\n"
+        if item_id_str == "1":
+            reward = random.randint(10, 100)
+            user["total_points"] += reward
+            result_msg += f"🎁 打开礼盒获得 {reward} 积分！"
+        elif item_id_str == "2":
+            buffs = user.get("buffs", {})
+            buffs["double_next"] = True
+            user["buffs"] = buffs
+            result_msg += "🍀 下次签到积分翻倍已生效！"
+        elif item_id_str == "3":
+            result_msg += "🔮 请使用 /占卜 查看今日运势"
+            items = user.get("items", {})
+            items["3"] = items.get("3", 0) + 1
+            user["items"] = items
+        elif item_id_str == "4":
+            result_msg += "💎 请使用 /改名 <新名称> 修改显示名"
+            items = user.get("items", {})
+            items["4"] = items.get("4", 0) + 1
+            user["items"] = items
+        elif item_id_str == "5":
+            result_msg += "🛡️ 请使用 /补签 来补签昨天"
+            items = user.get("items", {})
+            items["5"] = items.get("5", 0) + 1
+            user["items"] = items
+        elif item_id_str == "6":
+            result_msg += "🎲 请使用 /抽奖 参与积分抽奖"
+            items = user.get("items", {})
+            items["6"] = items.get("6", 0) + 1
+            user["items"] = items
+        self._save_data()
+        result_msg += f"\n\n💰 剩余积分: {user['total_points']}"
+        yield event.plain_result(result_msg)
+
+    @filter.command("占卜")
+    @handle_errors
+    async def fortune(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        items = user.get("items", {})
+        if items.get("3", 0) <= 0:
+            yield event.plain_result("🔮 你没有占卜卡，去 /商店 购买一张吧！")
+            return
+        items["3"] -= 1
+        user["items"] = items
+        today = self._get_today()
+        if user.get("fortune_today") and user["fortune_today"].get("date") == today:
+            fortune = user["fortune_today"]
+        else:
+            level = random.choices(["大吉", "吉", "中", "凶"], weights=[15, 35, 40, 10])[0]
+            desc = random.choice(FORTUNES[level])
+            fortune = {
+                "date": today,
+                "level": level,
+                "desc": desc,
+                "lucky_num": random.randint(1, 99),
+                "lucky_color": random.choice(["红", "黄", "蓝", "绿", "紫", "黑", "白"]),
+                "lucky_dir": random.choice(["东", "南", "西", "北", "东南", "西北", "东北", "西南"])
+            }
+            user["fortune_today"] = fortune
+        self._save_data()
+        emojis = {"大吉": "🌟", "吉": "✨", "中": "☁️", "凶": "⚡"}
+        msg = (
+            f"🔮 {self._get_display_name(user_id)} 的今日运势\n\n"
+            f"{emojis[fortune['level']]} 运势: {fortune['level']} - {fortune['desc']}\n"
+            f"🔢 幸运数字: {fortune['lucky_num']}\n"
+            f"🎨 幸运色: {fortune['lucky_color']}\n"
+            f"🧭 幸运方位: {fortune['lucky_dir']}"
+        )
+        yield event.plain_result(msg)
+
+    @filter.command("改名")
+    @handle_errors
+    async def rename(self, event: AstrMessageEvent, new_name: str = None) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        if new_name is None:
+            message_text = event.message_str or ""
+            match = re.search(r"/改名\s+(.+)", message_text)
+            if match:
+                new_name = match.group(1).strip()
+        items = user.get("items", {})
+        if items.get("4", 0) <= 0:
+            yield event.plain_result("💎 你没有改名卡，去 /商店 购买一张吧！")
+            return
+        if not new_name or len(new_name) > MAX_NICKNAME_LENGTH:
+            yield event.plain_result(f"❌ 名称不能为空，且不能超过{MAX_NICKNAME_LENGTH}个字符。")
+            return
+        items["4"] -= 1
+        user["items"] = items
+        old_name = user.get("custom_name") or user["name"]
+        user["custom_name"] = new_name
+        self._save_data()
+        yield event.plain_result(f"💎 改名成功！\n{old_name} → {new_name}\n排行榜中已更新显示。")
+
+    @filter.command("补签")
+    @handle_errors
+    async def makeup_sign(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        items = user.get("items", {})
+        if items.get("5", 0) <= 0:
+            yield event.plain_result("🛡️ 你没有补签卡，去 /商店 购买一张吧！")
+            return
+        today = self._get_today()
+        yesterday = self._get_yesterday()
+        if user["last_signin"] == today:
+            yield event.plain_result("✅ 你今天已经签到了，不需要补签！")
+            return
+        if user["last_signin"] == yesterday:
+            yield event.plain_result("✅ 你昨天已经签到了，不需要补签！")
+            return
+        items["5"] -= 1
+        user["items"] = items
+        before_yesterday = (datetime.strptime(yesterday, "%Y-%m-%d").replace(tzinfo=TZ_BEIJING) - timedelta(days=1)).strftime("%Y-%m-%d")
+        if user.get("last_signin") == before_yesterday or user.get("streak", 0) > 0:
+            user["streak"] = user.get("streak", 0) + 1
+        else:
+            user["streak"] = 1
+        user["last_signin"] = yesterday
+        user["total_signins"] += 1
+        user["history"].append({"date": yesterday, "points": 0, "streak": user["streak"], "makeup": True})
+        self._save_data()
+        yield event.plain_result(
+            f"🛡️ 补签成功！\n📅 补签日期: {yesterday}\n"
+            f"🔥 当前连续: {user['streak']} 天\n"
+            f"⚠️ 补签不获得积分，仅保持连续天数"
+        )
+
+    @filter.command("抽奖")
+    @handle_errors
+    async def lottery(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        items = user.get("items", {})
+        if items.get("6", 0) <= 0:
+            yield event.plain_result("🎲 你没有抽奖券，去 /商店 购买一张吧！")
+            return
+        items["6"] -= 1
+        user["items"] = items
+        prizes = [
+            ("💸 谢谢参与", 0, 0.25),
+            ("🪙 小奖", random.randint(5, 20), 0.30),
+            ("💰 中奖", random.randint(30, 80), 0.20),
+            ("💎 大奖", random.randint(100, 200), 0.04),
+            ("👑 特等奖", random.randint(300, 500), 0.01),
+            ("⚡ 小惩罚", -random.randint(5, 15), 0.12),
+            ("💀 大惩罚", -random.randint(20, 50), 0.08),
+        ]
+        r = random.random()
+        cumulative = 0
+        prize = prizes[0]
+        for p in prizes:
+            cumulative += p[2]
+            if r <= cumulative:
+                prize = p
+                break
+        name, points, _ = prize
+        old_points = user["total_points"]
+        user["total_points"] += points
+        if user["total_points"] < 0:
+            user["total_points"] = 0
+        self._save_data()
+        msg_lines = ["🎲 抽奖结果", ""]
+        if points > 0:
+            msg_lines.append(f"🎁 {name} +{points} 积分！")
+        elif points < 0:
+            actual_deducted = old_points - user["total_points"]
+            msg_lines.append(f"💥 {name} -{actual_deducted} 积分！")
+            if user["total_points"] == 0:
+                msg_lines.append("😱 积分被扣光了！")
+        else:
+            msg_lines.append(f"🎁 {name}")
+        msg_lines.append("")
+        msg_lines.append(f"💰 当前积分: {user['total_points']}")
+        yield event.plain_result("\n".join(msg_lines))
+
+    @filter.command("转账")
+    @filter.command("转帐")
+    @handle_errors
+    async def transfer(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        if not self.plugin_config.enable_transfer:
+            yield event.plain_result("积分转账功能已关闭。")
+            return
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        user = self._ensure_user(user_id, user_name)
+        message_text = event.message_str or ""
+        match = re.search(r"/(?:转账|转帐)\s+(\d+)\s+(\d+)", message_text)
+        if not match:
+            yield event.plain_result(
+                "❌ 参数格式错误！\n用法: /转账 QQ号 金额\n例如: /转账 123456789 100\n\n"
+                "💡 提示: 请使用对方的QQ号，不是昵称"
+            )
+            return
+        target_qq = match.group(1)
+        amount_str = match.group(2)
+        try:
+            amount = int(amount_str)
+        except ValueError:
+            yield event.plain_result("❌ 金额格式错误，请输入数字。")
+            return
+        if amount <= 0:
+            yield event.plain_result("❌ 转账金额必须大于0。")
+            return
+        if user["total_points"] < amount:
+            yield event.plain_result(f"❌ 积分不足！\n你的积分: {user['total_points']}\n转账金额: {amount}")
+            return
+        target_id = None
+        target_display_name = None
+        for uid, u in self.user_data.items():
+            qq_part = uid.split(":")[-1] if ":" in uid else uid
+            if qq_part == target_qq:
+                target_id = uid
+                target_display_name = self._get_display_name(uid)
+                break
+        if not target_id:
+            yield event.plain_result(
+                f"❌ 未找到QQ号为 '{target_qq}' 的用户。\n对方需要先使用 /签到 注册账号。"
+            )
+            return
+        if target_id == user_id:
+            yield event.plain_result("❌ 不能转账给自己！")
+            return
+        user["total_points"] -= amount
+        self.user_data[target_id]["total_points"] += amount
+        self._save_data()
+        yield event.plain_result(
+            f"💸 转账成功！\n从: {self._get_display_name(user_id)}\n"
+            f"到: {target_display_name} (QQ:{target_qq})\n"
+            f"金额: {amount} 积分\n你的剩余积分: {user['total_points']}"
+        )
+
     @filter.command("重置数据")
     @handle_errors
     async def reset_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """重置所有签到数据（仅 AstrBot 管理员可用）"""
         if not self._is_admin(event):
             yield event.plain_result("🚫 权限不足！只有 AstrBot 管理员才能使用此指令。")
             return
-
         if not self.user_data:
             yield event.plain_result("📭 当前没有任何签到数据。")
             return
-
         user_count = len(self.user_data)
         self.user_data.clear()
         self._save_data()
-
         yield event.plain_result(
-            f"🗑️  数据重置成功！\n"
-            f"已清除 {user_count} 位用户的签到记录。\n"
-f"所有积分、连续天数、道具已归零。"
+            f"🗑️ 数据重置成功！\n已清除 {user_count} 位用户的签到记录。\n"
+            f"所有积分、连续天数、道具已归零。"
         )
 
+    @filter.command("签到帮助")
+    @handle_errors
+    async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        msg = (
+            "📖 签到插件 v1.1.2 使用帮助\n\n"
+            "📝 签到指令:\n"
+            "  /签到          - 每日签到，获取积分\n"
+            "  /签到信息      - 查看个人签到详情\n"
+            "  /签到排行      - 查看积分排行榜\n\n"
+            "🛒 商店指令:\n"
+            "  /商店          - 查看积分商店商品\n"
+            "  /购买 <编号>   - 购买商品（如 /购买 1）\n\n"
+            "🎮 道具指令:\n"
+            "  /占卜          - 使用占卜卡查看今日运势\n"
+            "  /改名 <名称>   - 使用改名卡修改显示名\n"
+            "  /补签          - 使用补签卡补签昨天\n"
+            "  /抽奖          - 使用抽奖券参与积分抽奖\n\n"
+            "💸 其他指令:\n"
+            "  /转账 QQ号 金额  - 转账积分给其他用户（通过QQ号）\n"
+            "  /重置数据        - 清除所有签到数据（管理员）\n\n"
+            "✨ 功能说明:\n"
+            "  • 每日签到可获得基础积分 + 连续加成 + 幸运奖励\n"
+            "  • 积分可在商店购买道具\n"
+            "  • 神秘礼盒和抽奖券每日限购1个\n"
+            "  • 抽奖有概率触发惩罚（扣分）\n"
+            "  • 连续签到加成有上限，断签会重置天数\n"
+            "  • 数据自动保存，重启不丢失"
+        )
+        yield event.plain_result(msg)
+
     async def terminate(self):
-        """插件卸载时保存数据"""
         self._save_data()
         logger.info("签到插件已卸载，数据已保存")
