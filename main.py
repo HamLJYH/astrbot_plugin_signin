@@ -36,7 +36,7 @@ MAX_NICKNAME_LENGTH = 15
 SHOP_ITEMS = {
     "1": {"name": "🎁 神秘礼盒", "price": 50, "desc": "随机获得 10-100 积分"},
     "2": {"name": "🍀 幸运符", "price": 30, "desc": "下次签到积分翻倍（限1次）"},
-    "3": {"name": "🔮 占卜卡", "price": 10, "desc": "查看今日运势"},
+    "3": {"name": "🔮 占卜卡", "price": 20, "desc": "查看今日运势"},
     "4": {"name": "💎 改名卡", "price": 100, "desc": "修改在排行榜中的显示名称"},
     "5": {"name": "🛡️  补签卡", "price": 80, "desc": "补签昨天，保持连续签到"},
     "6": {"name": "🎲 抽奖券", "price": 20, "desc": "参与积分抽奖，大奖等你拿"},
@@ -452,7 +452,11 @@ class SignInPlugin(Star):
     @filter.command("购买")
     @handle_errors
     async def buy(self, event: AstrMessageEvent, item_id: str = None) -> AsyncGenerator[Any, None]:
-        """购买商店商品"""
+        """购买商店商品
+
+        用法: /购买 编号
+        例如: /购买 1
+        """
         if not self.config.enable_shop:
             yield event.plain_result("积分商店功能已关闭。")
             return
@@ -462,12 +466,12 @@ class SignInPlugin(Star):
 
         user = self._ensure_user(user_id, user_name)
 
-        # 如果参数缺失，从消息内容解析
-        if item_id is None:
-            message_text = event.message_str or ""
-            match = re.search(r"/购买\s+(\d+)", message_text)
-            if match:
-                item_id = match.group(1)
+        # 从消息内容解析参数（支持 /购买1 /购买 1 /购买 [1] 等格式）
+        message_text = event.message_str or ""
+        # 匹配 /购买 后面跟着数字，支持可选空格和方括号
+        match = re.search(r"/购买\s*\[?(\d+)\]?", message_text)
+        if match:
+            item_id = match.group(1)
 
         if not item_id:
             yield event.plain_result("❌ 请指定商品编号，如 /购买 1")
@@ -587,18 +591,21 @@ class SignInPlugin(Star):
     @filter.command("改名")
     @handle_errors
     async def rename(self, event: AstrMessageEvent, new_name: str = None) -> AsyncGenerator[Any, None]:
-        """使用改名卡修改显示名称"""
+        """使用改名卡修改显示名称
+
+        用法: /改名 新名称
+        例如: /改名 小明
+        """
         user_id = self._get_user_id(event)
         user_name = self._get_user_name(event)
 
         user = self._ensure_user(user_id, user_name)
 
         # 从消息内容解析名称
-        if new_name is None:
-            message_text = event.message_str or ""
-            match = re.search(r"/改名\s+(.+)", message_text)
-            if match:
-                new_name = match.group(1).strip()
+        message_text = event.message_str or ""
+        match = re.search(r"/改名\s+(.+)", message_text)
+        if match:
+            new_name = match.group(1).strip()
 
         items = user.get("items", {})
         if items.get("4", 0) <= 0:
