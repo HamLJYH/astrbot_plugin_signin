@@ -149,6 +149,34 @@ class SignInPlugin(Star):
 
         logger.info("签到插件 v3.0 已加载")
 
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_message(self, event: AstrMessageEvent):
+        """监听所有消息，自动缓存活跃用户
+
+        这样即使用户没有签过到，只要发过消息就能被转账找到。
+        """
+        try:
+            user_id = self._get_user_id(event)
+            user_name = self._get_user_name(event)
+
+            # 如果用户不存在，自动注册（但不给积分）
+            if user_id not in self.user_data:
+                self.user_data[user_id] = {
+                    "name": user_name,
+                    "total_points": 0,
+                    "total_signins": 0,
+                    "streak": 0,
+                    "last_signin": "",
+                    "history": [],
+                    "items": {},
+                    "buffs": {},
+                    "custom_name": None,
+                    "fortune_today": None,
+                }
+                logger.debug(f"自动注册用户: {user_name} ({user_id})")
+        except Exception as e:
+            logger.debug(f"消息监听处理异常: {e}")
+
     def _load_config(self) -> SignInConfig:
         """安全加载插件配置"""
         default_config = SignInConfig()
@@ -211,11 +239,11 @@ class SignInPlugin(Star):
         yesterday = today - timedelta(days=1)
         return yesterday.strftime("%Y-%m-%d")
 
-    def _ensure_user(self, user_id: str, user_name: str) -> Dict[str, Any]:
+    def _ensure_user(self, user_id: str, user_name: str = None) -> Dict[str, Any]:
         """确保用户数据存在，返回用户数据"""
         if user_id not in self.user_data:
             self.user_data[user_id] = {
-                "name": user_name,
+                "name": user_name or f"用户{user_id.split(':')[-1]}",
                 "total_points": 0,
                 "total_signins": 0,
                 "streak": 0,
@@ -226,6 +254,9 @@ class SignInPlugin(Star):
                 "custom_name": None,
                 "fortune_today": None,
             }
+        # 如果传入了新名字，更新一下
+        elif user_name and not self.user_data[user_id].get("name"):
+            self.user_data[user_id]["name"] = user_name
         return self.user_data[user_id]
 
     def _get_display_name(self, user_id: str) -> str:
@@ -789,12 +820,25 @@ class SignInPlugin(Star):
                 target_display_name = self._get_display_name(uid)
                 break
 
+        # 如果用户不存在，自动创建（因为消息监听可能已经注册了，但以防万一）
         if not target_id:
-            yield event.plain_result(
-                f"❌ 未找到QQ号为 '{target_qq}' 的用户。\n"
-                f"对方需要先使用 /签到 注册账号。"
-            )
-            return
+            # 构造用户ID（假设同平台）
+            platform = event.get_platform_name()
+            target_id = f"{platform}:{target_qq}"
+            self.user_data[target_id] = {
+                "name": f"用户{target_qq}",
+                "total_points": 0,
+                "total_signins": 0,
+                "streak": 0,
+                "last_signin": "",
+                "history": [],
+                "items": {},
+                "buffs": {},
+                "custom_name": None,
+                "fortune_today": None,
+            }
+            target_display_name = f"用户{target_qq}"
+            logger.info(f"转账自动创建用户: {target_id}")
 
         if target_id == user_id:
             yield event.plain_result("❌ 不能转账给自己！")
@@ -873,9 +917,9 @@ class SignInPlugin(Star):
     @filter.command("重置数据")
     @handle_errors
     async def reset_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """重置所有签到数据（仅管理员可用）"""
+        """重置所有签到数据（仅 AstrBot 管理员可用）"""
         if not self._is_admin(event):
-            yield event.plain_result("🚫 权限不足！只有管理员才能使用此指令。")
+            yield event.plain_result("🚫 权限不足！只有 AstrBot 管理员才能使用此指令。")
             return
 
         if not self.user_data:
