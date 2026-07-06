@@ -892,7 +892,7 @@ class SignInPlugin(Star):
     @handle_errors
     async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """查看签到插件帮助"""
-        msg = """📖 签到插件 v1.1.2 使用帮助
+        msg = """📖 签到插件 v1..1.2 使用帮助
 
 📝 签到指令:
   /签到          - 每日签到，获取积分
@@ -962,3 +962,10 @@ class SignInPlugin(Star):
         yield event.plain_result(
             f"🗑️  数据重置成功！\n"
             f"已清除 {user_count} 位用户的签到记录。\n"
+f"所有积分、连续天数、道具已归零。"
+        )
+
+    async def terminate(self):
+        """插件卸载时保存数据"""
+        self._save_data()
+        logger.info("签到插件已卸载，数据已保存")
