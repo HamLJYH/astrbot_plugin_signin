@@ -13,4 +13,3 @@ support_platforms:
   - wecom
   - lark
   - dingtalk
-  - weixin_official_account
