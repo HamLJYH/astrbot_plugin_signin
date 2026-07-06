@@ -147,7 +147,7 @@ class SignInPlugin(Star):
         # 加载并验证配置
         self.config = self._load_config()
 
-        logger.info("签到插件 v3.0 已加载")
+        logger.info("签到插件 v1.1.2 已加载")
 
     def _load_config(self) -> SignInConfig:
         """安全加载插件配置"""
@@ -451,7 +451,7 @@ class SignInPlugin(Star):
 
     @filter.command("购买")
     @handle_errors
-    async def buy(self, event: AstrMessageEvent, item_id: str = None) -> AsyncGenerator[Any, None]:
+    async def buy(self, event: AstrMessageEvent, item_id: int = None) -> AsyncGenerator[Any, None]:
         """购买商店商品"""
         if not self.config.enable_shop:
             yield event.plain_result("积分商店功能已关闭。")
@@ -467,13 +467,15 @@ class SignInPlugin(Star):
             message_text = event.message_str or ""
             match = re.search(r"/购买\s+(\d+)", message_text)
             if match:
-                item_id = match.group(1)
+                item_id = int(match.group(1))
 
-        if not item_id:
+        if item_id is None:
             yield event.plain_result("❌ 请指定商品编号，如 /购买 1")
             return
 
-        item = SHOP_ITEMS.get(item_id)
+        # 转为字符串键
+        item_id_str = str(item_id)
+        item = SHOP_ITEMS.get(item_id_str)
         if not item:
             yield event.plain_result("❌ 商品编号不存在，请使用 /商店 查看商品列表。")
             return
@@ -489,36 +491,36 @@ class SignInPlugin(Star):
         user["total_points"] -= item["price"]
         result_msg = f"✅ 购买成功！\n\n{item['name']}\n"
 
-        if item_id == "1":  # 神秘礼盒
+        if item_id_str == "1":  # 神秘礼盒
             reward = random.randint(10, 100)
             user["total_points"] += reward
             result_msg += f"🎁 打开礼盒获得 {reward} 积分！"
 
-        elif item_id == "2":  # 幸运符
+        elif item_id_str == "2":  # 幸运符
             buffs = user.get("buffs", {})
             buffs["double_next"] = True
             user["buffs"] = buffs
             result_msg += "🍀 下次签到积分翻倍已生效！"
 
-        elif item_id == "3":  # 占卜卡
+        elif item_id_str == "3":  # 占卜卡
             result_msg += "🔮 请使用 /占卜 查看今日运势"
             items = user.get("items", {})
             items["3"] = items.get("3", 0) + 1
             user["items"] = items
 
-        elif item_id == "4":  # 改名卡
+        elif item_id_str == "4":  # 改名卡
             result_msg += "💎 请使用 /改名 <新名称> 修改显示名"
             items = user.get("items", {})
             items["4"] = items.get("4", 0) + 1
             user["items"] = items
 
-        elif item_id == "5":  # 补签卡
+        elif item_id_str == "5":  # 补签卡
             result_msg += "🛡️  请使用 /补签 来补签昨天"
             items = user.get("items", {})
             items["5"] = items.get("5", 0) + 1
             user["items"] = items
 
-        elif item_id == "6":  # 抽奖券
+        elif item_id_str == "6":  # 抽奖券
             result_msg += "🎲 请使用 /抽奖 参与积分抽奖"
             items = user.get("items", {})
             items["6"] = items.get("6", 0) + 1
@@ -819,7 +821,7 @@ class SignInPlugin(Star):
     @handle_errors
     async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         """查看签到插件帮助"""
-        msg = """📖 签到插件 v3.0 使用帮助
+        msg = """📖 签到插件 v1.1.2 使用帮助
 
 📝 签到指令:
   /签到          - 每日签到，获取积分
