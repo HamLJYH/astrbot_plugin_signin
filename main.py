@@ -39,7 +39,7 @@ SHOP_ITEMS = {
     "3": {"name": "🔮 占卜卡", "price": 20, "desc": "查看今日运势"},
     "4": {"name": "💎 改名卡", "price": 100, "desc": "修改在排行榜中的显示名称"},
     "5": {"name": "🛡️  补签卡", "price": 80, "desc": "补签昨天，保持连续签到"},
-    "6": {"name": "🎲 抽奖券", "price": 10, "desc": "参与积分抽奖，大奖等你拿"},
+    "6": {"name": "🎲 抽奖券", "price": 20, "desc": "参与积分抽奖，大奖等你拿"},
 }
 
 FORTUNES = {
@@ -144,10 +144,12 @@ class SignInPlugin(Star):
         self.data_file = os.path.join(self.data_dir, "signin_data.json")
         self.user_data = self._load_data()
 
-        # 加载并验证配置
-        self.config = self._load_config()
-
         logger.info("签到插件 v1.1.2 已加载")
+
+    @property
+    def config(self) -> SignInConfig:
+        """配置属性，每次访问都重新加载（支持热更新）"""
+        return self._load_config()
 
     def _load_config(self) -> SignInConfig:
         """安全加载插件配置"""
@@ -168,6 +170,11 @@ class SignInPlugin(Star):
             logger.warning(f"加载配置失败，使用默认配置: {e}")
 
         return default_config
+
+    def _refresh_config(self) -> SignInConfig:
+        """刷新配置（每次指令执行前调用）"""
+        self.config = self._load_config()
+        return self.config
 
     def _load_data(self) -> Dict[str, Any]:
         """加载签到数据"""
@@ -225,8 +232,36 @@ class SignInPlugin(Star):
                 "buffs": {},
                 "custom_name": None,
                 "fortune_today": None,
+                "daily_buy": {},  # 每日购买记录: {"item_id": "date"}
             }
+        # 兼容旧数据：如果没有 daily_buy 字段，初始化
+        if "daily_buy" not in self.user_data[user_id]:
+            self.user_data[user_id]["daily_buy"] = {}
         return self.user_data[user_id]
+
+    def _check_daily_limit(self, user: Dict[str, Any], item_id: str) -> bool:
+        """检查是否超过每日购买限制
+
+        Returns:
+            True: 可以购买（未超过限制或已刷新）
+            False: 已达今日上限
+        """
+        today = self._get_today()
+        daily_buy = user.get("daily_buy", {})
+
+        # 如果记录不是今天的，说明已刷新
+        last_buy_date = daily_buy.get(item_id, "")
+        if last_buy_date != today:
+            return True
+
+        return False
+
+    def _record_daily_buy(self, user: Dict[str, Any], item_id: str):
+        """记录今日购买"""
+        today = self._get_today()
+        if "daily_buy" not in user:
+            user["daily_buy"] = {}
+        user["daily_buy"][item_id] = today
 
     def _get_display_name(self, user_id: str) -> str:
         """获取用户显示名称"""
@@ -437,9 +472,11 @@ class SignInPlugin(Star):
 
         msg_lines = ["🏪 积分商店 🏪", ""]
 
+        limit_items = {"1": "【每日限购1个】", "6": "【每日限购1个】"}
         for item_id, item in SHOP_ITEMS.items():
+            limit_tag = limit_items.get(item_id, "")
             msg_lines.append(
-                f"[{item_id}] {item['name']}\n"
+                f"[{item_id}] {item['name']} {limit_tag}\n"
                 f"    💰 价格: {item['price']} 积分\n"
                 f"    📖 {item['desc']}"
             )
@@ -480,6 +517,16 @@ class SignInPlugin(Star):
             yield event.plain_result("❌ 商品编号不存在，请使用 /商店 查看商品列表。")
             return
 
+        # 检查每日限购（抽奖券和神秘礼盒）
+        limit_items = {"1": "神秘礼盒", "6": "抽奖券"}
+        if item_id_str in limit_items:
+            if not self._check_daily_limit(user, item_id_str):
+                yield event.plain_result(
+                    f"🚫 今日已购买过 {limit_items[item_id_str]} 了！\n"
+                    f"每天限购1个，凌晨{self.config.reset_hour}点刷新。"
+                )
+                return
+
         if user["total_points"] < item["price"]:
             yield event.plain_result(
                 f"❌ 积分不足！\n"
@@ -489,6 +536,11 @@ class SignInPlugin(Star):
             return
 
         user["total_points"] -= item["price"]
+
+        # 记录限购
+        if item_id_str in limit_items:
+            self._record_daily_buy(user, item_id_str)
+
         result_msg = f"✅ 购买成功！\n\n{item['name']}\n"
 
         if item_id_str == "1":  # 神秘礼盒
@@ -680,7 +732,7 @@ class SignInPlugin(Star):
     @filter.command("抽奖")
     @handle_errors
     async def lottery(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        """使用抽奖券参与积分抽奖"""
+        """使用抽奖券参与积分抽奖（含惩罚机制）"""
         user_id = self._get_user_id(event)
         user_name = self._get_user_name(event)
 
@@ -694,12 +746,15 @@ class SignInPlugin(Star):
         items["6"] -= 1
         user["items"] = items
 
+        # 奖池：降低大奖概率，增加惩罚
         prizes = [
-            ("💸 谢谢参与", 0, 0.30),
-            ("🪙 小奖", random.randint(5, 20), 0.35),
-            ("💰 中奖", random.randint(30, 80), 0.25),
-            ("💎 大奖", random.randint(100, 200), 0.08),
-            ("👑 特等奖", random.randint(300, 500), 0.02),
+            ("💸 谢谢参与", 0, 0.25),
+            ("🪙 小奖", random.randint(5, 20), 0.30),
+            ("💰 中奖", random.randint(30, 80), 0.20),
+            ("💎 大奖", random.randint(100, 200), 0.04),
+            ("👑 特等奖", random.randint(300, 500), 0.01),
+            ("⚡ 小惩罚", -random.randint(5, 15), 0.12),
+            ("💀 大惩罚", -random.randint(20, 50), 0.08),
         ]
 
         r = random.random()
@@ -712,17 +767,33 @@ class SignInPlugin(Star):
                 break
 
         name, points, _ = prize
+
+        # 应用积分变动
+        old_points = user["total_points"]
         user["total_points"] += points
+
+        # 确保积分不会扣成负数
+        if user["total_points"] < 0:
+            user["total_points"] = 0
 
         self._save_data()
 
-        msg = f"🎲 抽奖结果\n\n"
-        msg += f"🎁 {name}"
-        if points > 0:
-            msg += f" +{points} 积分！"
-        msg += f"\n\n💰 当前积分: {user['total_points']}"
+        msg_lines = ["🎲 抽奖结果", ""]
 
-        yield event.plain_result(msg)
+        if points > 0:
+            msg_lines.append(f"🎁 {name} +{points} 积分！")
+        elif points < 0:
+            actual_deducted = old_points - user["total_points"]
+            msg_lines.append(f"💥 {name} -{actual_deducted} 积分！")
+            if user["total_points"] == 0:
+                msg_lines.append("😱 积分被扣光了！")
+        else:
+            msg_lines.append(f"🎁 {name}")
+
+        msg_lines.append("")
+        msg_lines.append(f"💰 当前积分: {user['total_points']}")
+
+        yield event.plain_result("\n".join(msg_lines))
 
     # ==================== 积分转账 ====================
 
@@ -891,10 +962,3 @@ class SignInPlugin(Star):
         yield event.plain_result(
             f"🗑️  数据重置成功！\n"
             f"已清除 {user_count} 位用户的签到记录。\n"
-            f"所有积分、连续天数、道具已归零。"
-        )
-
-    async def terminate(self):
-        """插件卸载时保存数据"""
-        self._save_data()
-        logger.info("签到插件已卸载，数据已保存")
