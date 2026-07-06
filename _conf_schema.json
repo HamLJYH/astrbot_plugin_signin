@@ -3,7 +3,7 @@
     "description": "基础签到积分",
     "type": "int",
     "hint": "每日签到获得的基础积分",
-    "default": 默认为10，无法进行修改
+    "default": 10
   },
   "streak_bonus": {
     "description": "连续签到加成",
