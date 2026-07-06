@@ -105,3 +105,15 @@ astrbot_plugin_signin/
 ## 许可证
 
 MIT License
+
+---
+
+🙏致谢
+
+-[AstrBot](https://github.com/AstrBotDevs/AstrBot)本插件所依赖的框架，拥有强大的agent能力和丰富的开源生态。
+
+---
+
+支持
+
+-欢迎提交 Issue 和 Pull Request 来帮助改进本插件。
