@@ -8,8 +8,3 @@ repo: https://github.com/HamLJYH/astrbot_plugin_signin
 astrbot_version: ">=4.16"
 support_platforms:
   - aiocqhttp
-  - telegram
-  - discord
-  - wecom
-  - lark
-  - dingtalk
