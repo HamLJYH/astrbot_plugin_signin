@@ -60,7 +60,7 @@
     "default": true
   },
   "enable_transfer": {
-    "description": "启用积分转账（此功能没改好，建议关闭）",
+    "description": "启用积分转账（建议关闭）",
     "type": "bool",
     "hint": "是否允许用户之间转账积分",
     "default": true
