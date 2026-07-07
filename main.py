@@ -606,7 +606,6 @@ class SignInPlugin(Star):
         yield event.plain_result("\n".join(msg_lines))
 
     @filter.command("转账")
-    @filter.command("转帐")
     @handle_errors
     async def transfer(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         if not self.plugin_config.enable_transfer:
