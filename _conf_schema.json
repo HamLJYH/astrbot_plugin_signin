@@ -1,68 +1,78 @@
 {
   "base_points": {
-    "description": "基础签到积分",
+    "description": "每日签到基础积分",
     "type": "int",
-    "hint": "每日签到获得的基础积分",
-    "default": 10
+    "default": 10,
+    "hint": "每次签到获得的基础积分数"
   },
   "streak_bonus": {
-    "description": "连续签到加成",
+    "description": "是否启用连续签到加成",
     "type": "bool",
-    "hint": "是否启用连续签到额外奖励",
     "default": true
   },
   "streak_bonus_rate": {
     "description": "连续签到加成比例",
     "type": "float",
-    "hint": "每连续签到一天额外增加的积分比例（如0.1表示每天增加10%）",
-    "default": 0.1
+    "default": 0.1,
+    "hint": "每多连续1天增加的加成比例"
   },
   "max_streak_bonus": {
     "description": "最大连续签到加成倍数",
     "type": "float",
-    "hint": "连续签到加成上限倍数",
-    "default": 2.0
+    "default": 2.0,
+    "hint": "例如2.0表示最多2倍基础积分"
   },
   "top_limit": {
-    "description": "排行榜显示数量",
+    "description": "排行榜显示人数",
     "type": "int",
-    "hint": "积分排行榜显示的用户数量",
     "default": 10
   },
   "reset_hour": {
-    "description": "签到重置时间（小时）",
+    "description": "每日签到重置时间（小时）",
     "type": "int",
-    "hint": "每日签到的重置时间（0-23），默认5点",
-    "default": 5
+    "default": 5,
+    "hint": "0-23，建议设为凌晨"
   },
   "enable_rank": {
-    "description": "启用排行榜",
+    "description": "是否启用排行榜",
     "type": "bool",
-    "hint": "是否启用积分排行榜功能",
     "default": true
   },
   "lucky_draw": {
-    "description": "启用幸运抽奖",
+    "description": "是否启用签到幸运奖励",
     "type": "bool",
-    "hint": "签到时是否触发随机幸运积分奖励",
     "default": true
   },
-  "lucky_draw_max": {
-    "description": "幸运抽奖最大额外积分",
+  "lucky_draw_points_max": {
+    "description": "幸运奖励最大积分",
     "type": "int",
-    "hint": "幸运抽奖最多额外获得的积分",
     "default": 50
   },
   "enable_shop": {
-    "description": "启用积分商店",
+    "description": "是否启用积分商店",
     "type": "bool",
-    "hint": "是否启用积分商店功能",
     "default": true
   },
   "enable_transfer": {
-    "description": "启用积分转账（建议关闭）",
+    "description": "是否启用积分转账",
     "type": "bool",
-    "hint": "是否允许用户之间转账积分",
     "default": true
+  },
+  "transfer_min_amount": {
+    "description": "最低转账金额",
+    "type": "int",
+    "default": 10
+  },
+  "transfer_fee_rate": {
+    "description": "转账手续费率",
+    "type": "float",
+    "default": 0.05,
+    "hint": "0.05表示5%手续费"
+  },
+  "transfer_cooldown": {
+    "description": "转账冷却时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "两次转账之间的最小间隔"
   }
 }
