@@ -1,5 +1,5 @@
 """
-AstrBot 签到插件 v1.1.2
+AstrBot 签到插件 v1.2.0
 
 功能描述：
 - 每日签到、连续签到、积分加成
@@ -10,8 +10,8 @@ AstrBot 签到插件 v1.1.2
 - 抽奖系统（含惩罚机制）
 
 作者: HamLJYH
-版本: 1.1.2
-日期: 2026-07-06
+版本: 1.2.0
+日期: 2026-07-08
 """
 
 import os
@@ -19,9 +19,11 @@ import json
 import random
 import re
 import functools
+import fcntl
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Optional, Tuple
 
 from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
@@ -51,6 +53,11 @@ FORTUNES = {
 
 MILESTONES = [7, 30, 100, 365]
 
+# 转账配置常量
+TRANSFER_MIN_AMOUNT = 10
+TRANSFER_FEE_RATE = 0.05
+TRANSFER_COOLDOWN = 300  # 5分钟
+
 
 @dataclass
 class SignInConfig:
@@ -63,9 +70,12 @@ class SignInConfig:
     reset_hour: int = 5
     enable_rank: bool = True
     lucky_draw: bool = True
-    lucky_draw_max: int = 50
+    lucky_draw_points_max: int = 50
     enable_shop: bool = True
     enable_transfer: bool = True
+    transfer_min_amount: int = 10
+    transfer_fee_rate: float = 0.05
+    transfer_cooldown: int = 300
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "SignInConfig":
@@ -78,9 +88,12 @@ class SignInConfig:
             reset_hour=config.get("reset_hour", 5),
             enable_rank=config.get("enable_rank", True),
             lucky_draw=config.get("lucky_draw", True),
-            lucky_draw_max=config.get("lucky_draw_max", 50),
+            lucky_draw_points_max=config.get("lucky_draw_points_max", 50),
             enable_shop=config.get("enable_shop", True),
             enable_transfer=config.get("enable_transfer", True),
+            transfer_min_amount=config.get("transfer_min_amount", 10),
+            transfer_fee_rate=config.get("transfer_fee_rate", 0.05),
+            transfer_cooldown=config.get("transfer_cooldown", 300),
         )
 
     def validate(self) -> bool:
@@ -94,6 +107,12 @@ class SignInConfig:
             raise ValueError("排行榜数量至少为1")
         if not (0 <= self.reset_hour <= 23):
             raise ValueError("重置时间必须在0-23之间")
+        if self.transfer_min_amount < 1:
+            raise ValueError("最低转账金额至少为1")
+        if not (0 <= self.transfer_fee_rate < 1):
+            raise ValueError("手续费率必须在0-1之间")
+        if self.transfer_cooldown < 0:
+            raise ValueError("转账冷却时间不能为负数")
         return True
 
 
@@ -110,6 +129,9 @@ def handle_errors(func):
         except KeyError as e:
             logger.warning(f"[{func.__name__}] 数据缺失: {e}")
             yield event.plain_result("❌ 操作失败: 数据缺失")
+        except PermissionError as e:
+            logger.error(f"[{func.__name__}] 文件权限错误: {e}")
+            yield event.plain_result("❌ 数据保存失败，请检查文件权限")
         except Exception as e:
             error_type = type(e).__name__
             logger.error(f"[{func.__name__}] 执行失败 [{error_type}]: {e}", exc_info=True)
@@ -140,9 +162,14 @@ class SignInPlugin(Star):
         )
         os.makedirs(self.data_dir, exist_ok=True)
         self.data_file = os.path.join(self.data_dir, "signin_data.json")
+        self.lock_file = os.path.join(self.data_dir, ".data.lock")
+
+        # 确保锁文件存在
+        open(self.lock_file, "a").close()
+
         self.user_data = self._load_data()
 
-        logger.info("签到插件 v1.1.2 已加载")
+        logger.info("签到插件 v1.2.0 已加载")
 
     def _parse_config(self, config: dict) -> SignInConfig:
         """解析插件配置"""
@@ -166,11 +193,18 @@ class SignInPlugin(Star):
         return {}
 
     def _save_data(self):
+        """保存数据（带文件锁保护）"""
         try:
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(self.user_data, f, ensure_ascii=False, indent=2)
+            with open(self.lock_file, "r+") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                try:
+                    with open(self.data_file, "w", encoding="utf-8") as f:
+                        json.dump(self.user_data, f, ensure_ascii=False, indent=2)
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         except IOError as e:
             logger.error(f"保存签到数据失败: {e}")
+            raise PermissionError(f"数据保存失败: {e}")
 
     def _get_user_id(self, event: AstrMessageEvent) -> str:
         sender_id = event.get_sender_id()
@@ -205,10 +239,21 @@ class SignInPlugin(Star):
                 "custom_name": None,
                 "fortune_today": None,
                 "daily_buy": {},
+                "transfer_cooldown": 0,
+                "transfer_history": [],
             }
-        if "daily_buy" not in self.user_data[user_id]:
-            self.user_data[user_id]["daily_buy"] = {}
-        return self.user_data[user_id]
+        # 兼容性：为旧数据添加新字段
+        user = self.user_data[user_id]
+        for key, default in [
+            ("daily_buy", {}),
+            ("transfer_cooldown", 0),
+            ("transfer_history", []),
+            ("items", {}),
+            ("buffs", {}),
+        ]:
+            if key not in user:
+                user[key] = default
+        return user
 
     def _get_display_name(self, user_id: str) -> str:
         user = self.user_data.get(user_id, {})
@@ -225,7 +270,7 @@ class SignInPlugin(Star):
         lucky_points = 0
         if self.plugin_config.lucky_draw:
             if random.random() < 0.2:
-                lucky_points = random.randint(1, self.plugin_config.lucky_draw_max)
+                lucky_points = random.randint(1, self.plugin_config.lucky_draw_points_max)
         total = base_points + streak_bonus + lucky_points
         buffs = user.get("buffs", {})
         if buffs.get("double_next", False):
@@ -264,6 +309,65 @@ class SignInPlugin(Star):
             pass
         return False
 
+    def _deduct_points(self, user: Dict[str, Any], amount: int) -> bool:
+        """安全扣除积分，返回是否成功"""
+        if user["total_points"] < amount:
+            return False
+        user["total_points"] -= amount
+        return True
+
+    def _check_transfer_cooldown(self, user: Dict[str, Any]) -> Tuple[bool, int]:
+        """检查转账冷却，返回 (是否在冷却中, 剩余秒数)"""
+        last_transfer = user.get("transfer_cooldown", 0)
+        cooldown = self.plugin_config.transfer_cooldown
+        now = int(time.time())
+        if now - last_transfer < cooldown:
+            return True, cooldown - (now - last_transfer)
+        return False, 0
+
+    def _set_transfer_cooldown(self, user: Dict[str, Any]):
+        """设置转账冷却时间"""
+        user["transfer_cooldown"] = int(time.time())
+
+    def _format_amount_change(self, before: int, after: int, label: str) -> str:
+        """格式化金额变化显示"""
+        change = after - before
+        if change > 0:
+            return f"{label}: {before} → {after} (+{change})"
+        elif change < 0:
+            return f"{label}: {before} → {after} ({change})"
+        else:
+            return f"{label}: {before} → {after} (无变化)"
+
+    def _extract_target_qq(self, event: AstrMessageEvent) -> Optional[str]:
+        """从消息中提取目标QQ号"""
+        message_text = event.message_str or ""
+        # 尝试匹配 @提及 或 纯数字QQ号
+        # 优先检查消息中的at
+        if hasattr(event.message_obj, "at") and event.message_obj.at:
+            return str(event.message_obj.at[0])
+        # 正则匹配QQ号（5-12位数字）
+        match = re.search(r"(?:@|QQ|qq)?\s*(\d{5,12})", message_text)
+        if match:
+            return match.group(1)
+        return None
+
+    def _extract_amount(self, event: AstrMessageEvent) -> Optional[int]:
+        """从消息中提取金额"""
+        message_text = event.message_str or ""
+        # 匹配数字（支持在消息末尾或中间）
+        numbers = re.findall(r"\b(\d+)\b", message_text)
+        if len(numbers) >= 2:
+            # 如果有多个数字，取最后一个作为金额（第一个是QQ号）
+            return int(numbers[-1])
+        elif len(numbers) == 1:
+            val = int(numbers[0])
+            # 如果只有一个数字且大于10000，可能是QQ号
+            if val > 100000:
+                return None
+            return val
+        return None
+
     @filter.command("签到")
     @handle_errors
     async def signin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -291,6 +395,7 @@ class SignInPlugin(Star):
         user["total_signins"] += 1
         user["last_signin"] = today
         user["history"].append({"date": today, "points": total_points, "streak": user["streak"]})
+        # 限制历史记录长度
         if len(user["history"]) > 100:
             user["history"] = user["history"][-100:]
         user["fortune_today"] = None
@@ -335,9 +440,11 @@ class SignInPlugin(Star):
         if items:
             item_list = []
             for item_id, count in items.items():
-                item_name = SHOP_ITEMS.get(item_id, {}).get("name", f"道具{item_id}")
-                item_list.append(f"{item_name} x{count}")
-            item_str = "\n🎒 背包: " + ", ".join(item_list)
+                if count > 0:
+                    item_name = SHOP_ITEMS.get(item_id, {}).get("name", f"道具{item_id}")
+                    item_list.append(f"{item_name} x{count}")
+            if item_list:
+                item_str = "\n🎒 背包: " + ", ".join(item_list)
         status = "✅ 已签到" if signed_today else "❌ 未签到"
         msg = (
             f"📋 {self._get_display_name(user_id)} 的签到信息\n\n"
@@ -394,19 +501,24 @@ class SignInPlugin(Star):
         user_id = self._get_user_id(event)
         user_name = self._get_user_name(event)
         user = self._ensure_user(user_id, user_name)
+
+        # 如果 AstrBot 参数解析失败，尝试正则回退
         if item_id is None:
             message_text = event.message_str or ""
             match = re.search(r"/购买\s+(\d+)", message_text)
             if match:
                 item_id = int(match.group(1))
+
         if item_id is None:
             yield event.plain_result("❌ 请指定商品编号，如 /购买 1")
             return
+
         item_id_str = str(item_id)
         item = SHOP_ITEMS.get(item_id_str)
         if not item:
             yield event.plain_result("❌ 商品编号不存在，请使用 /商店 查看商品列表。")
             return
+
         limit_items = {"1": "神秘礼盒", "6": "抽奖券"}
         if item_id_str in limit_items:
             if not self._check_daily_limit(user, item_id_str):
@@ -415,15 +527,18 @@ class SignInPlugin(Star):
                     f"每天限购1个，凌晨{self.plugin_config.reset_hour}点刷新。"
                 )
                 return
-        if user["total_points"] < item["price"]:
+
+        # 使用安全扣除
+        if not self._deduct_points(user, item["price"]):
             yield event.plain_result(
                 f"❌ 积分不足！\n商品: {item['name']} (需要 {item['price']} 积分)\n"
                 f"你的积分: {user['total_points']}"
             )
             return
-        user["total_points"] -= item["price"]
+
         if item_id_str in limit_items:
             self._record_daily_buy(user, item_id_str)
+
         result_msg = f"✅ 购买成功！\n\n{item['name']}\n"
         if item_id_str == "1":
             reward = random.randint(10, 100)
@@ -454,6 +569,7 @@ class SignInPlugin(Star):
             items = user.get("items", {})
             items["6"] = items.get("6", 0) + 1
             user["items"] = items
+
         self._save_data()
         result_msg += f"\n\n💰 剩余积分: {user['total_points']}"
         yield event.plain_result(result_msg)
@@ -469,6 +585,8 @@ class SignInPlugin(Star):
             yield event.plain_result("🔮 你没有占卜卡，去 /商店 购买一张吧！")
             return
         items["3"] -= 1
+        if items["3"] <= 0:
+            del items["3"]
         user["items"] = items
         today = self._get_today()
         if user.get("fortune_today") and user["fortune_today"].get("date") == today:
@@ -502,11 +620,14 @@ class SignInPlugin(Star):
         user_id = self._get_user_id(event)
         user_name = self._get_user_name(event)
         user = self._ensure_user(user_id, user_name)
+
+        # 如果 AstrBot 参数解析失败，尝试正则回退
         if new_name is None:
             message_text = event.message_str or ""
             match = re.search(r"/改名\s+(.+)", message_text)
             if match:
                 new_name = match.group(1).strip()
+
         items = user.get("items", {})
         if items.get("4", 0) <= 0:
             yield event.plain_result("💎 你没有改名卡，去 /商店 购买一张吧！")
@@ -515,6 +636,8 @@ class SignInPlugin(Star):
             yield event.plain_result(f"❌ 名称不能为空，且不能超过{MAX_NICKNAME_LENGTH}个字符。")
             return
         items["4"] -= 1
+        if items["4"] <= 0:
+            del items["4"]
         user["items"] = items
         old_name = user.get("custom_name") or user["name"]
         user["custom_name"] = new_name
@@ -539,16 +662,31 @@ class SignInPlugin(Star):
         if user["last_signin"] == yesterday:
             yield event.plain_result("✅ 你昨天已经签到了，不需要补签！")
             return
+
         items["5"] -= 1
+        if items["5"] <= 0:
+            del items["5"]
         user["items"] = items
-        before_yesterday = (datetime.strptime(yesterday, "%Y-%m-%d").replace(tzinfo=TZ_BEIJING) - timedelta(days=1)).strftime("%Y-%m-%d")
-        if user.get("last_signin") == before_yesterday or user.get("streak", 0) > 0:
+
+        # 修复：更严谨的补签逻辑
+        # 如果上次签到是前天，则连续天数+1；否则重置为1（因为补签的是昨天）
+        before_yesterday_dt = datetime.strptime(yesterday, "%Y-%m-%d").replace(tzinfo=TZ_BEIJING) - timedelta(days=1)
+        before_yesterday = before_yesterday_dt.strftime("%Y-%m-%d")
+
+        if user.get("last_signin") == before_yesterday:
             user["streak"] = user.get("streak", 0) + 1
-        else:
+        elif user.get("last_signin") == "":
+            # 从未签到过，补签后连续为1
             user["streak"] = 1
+        else:
+            # 断签超过一天，补签昨天后连续为1（因为前天没签）
+            user["streak"] = 1
+
         user["last_signin"] = yesterday
         user["total_signins"] += 1
         user["history"].append({"date": yesterday, "points": 0, "streak": user["streak"], "makeup": True})
+        if len(user["history"]) > 100:
+            user["history"] = user["history"][-100:]
         self._save_data()
         yield event.plain_result(
             f"🛡️ 补签成功！\n📅 补签日期: {yesterday}\n"
@@ -567,6 +705,8 @@ class SignInPlugin(Star):
             yield event.plain_result("🎲 你没有抽奖券，去 /商店 购买一张吧！")
             return
         items["6"] -= 1
+        if items["6"] <= 0:
+            del items["6"]
         user["items"] = items
         prizes = [
             ("💸 谢谢参与", 0, 0.25),
@@ -588,6 +728,7 @@ class SignInPlugin(Star):
         name, points, _ = prize
         old_points = user["total_points"]
         user["total_points"] += points
+        # 确保积分不会为负
         if user["total_points"] < 0:
             user["total_points"] = 0
         self._save_data()
@@ -608,57 +749,141 @@ class SignInPlugin(Star):
     @filter.command("转账")
     @handle_errors
     async def transfer(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        """转账给其他用户（通过QQ号）"""
         if not self.plugin_config.enable_transfer:
-            yield event.plain_result("积分转账功能已关闭。")
+            yield event.plain_result("💸 转账功能已关闭。")
             return
+
+        user_id = self._get_user_id(event)
+        user_name = self._get_user_name(event)
+        sender = self._ensure_user(user_id, user_name)
+
+        # 解析目标QQ号和金额
+        target_qq = self._extract_target_qq(event)
+        amount = self._extract_amount(event)
+
+        if not target_qq:
+            yield event.plain_result(
+                "❌ 请指定转账目标。\n"
+                "用法: /转账 @用户 积分\n"
+                "或: /转账 QQ号 积分"
+            )
+            return
+
+        if not amount or amount <= 0:
+            yield event.plain_result("❌ 请指定有效的转账金额。用法: /转账 QQ号 积分")
+            return
+
+        # 构建目标用户的完整ID（假设同平台）
+        platform = event.get_platform_name()
+        target_id = f"{platform}:{target_qq}"
+
+        if target_id == user_id:
+            yield event.plain_result("❌ 不能转账给自己。")
+            return
+
+        # 检查最低转账金额
+        min_amount = self.plugin_config.transfer_min_amount
+        if amount < min_amount:
+            yield event.plain_result(f"❌ 最低转账金额为 {min_amount} 积分。")
+            return
+
+        # 检查冷却
+        in_cooldown, remain = self._check_transfer_cooldown(sender)
+        if in_cooldown:
+            mins = remain // 60
+            secs = remain % 60
+            yield event.plain_result(f"⏰ 转账冷却中，剩余 {mins}分{secs}秒。")
+            return
+
+        # 计算手续费
+        fee_rate = self.plugin_config.transfer_fee_rate
+        fee = int(amount * fee_rate)
+        total_cost = amount + fee
+
+        if sender["total_points"] < total_cost:
+            yield event.plain_result(
+                f"❌ 积分不足。\n"
+                f"转账积分: {amount}\n"
+                "手续费: {fee} ({int(fee_rate * 100)}%)\n"
+                f"总计需要: {total_cost} 积分\n"
+                f"你的积分: {sender['total_points']}"
+            )
+            return
+
+        # 确保目标用户存在
+        target = self._ensure_user(target_id, f"用户{target_qq}")
+
+        # 执行转账
+        sender_before = sender["total_points"]
+        target_before = target["total_points"]
+        sender["total_points"] -= total_cost
+        target["total_points"] += amount
+        self._set_transfer_cooldown(sender)
+
+        # 记录转账历史
+        timestamp = int(time.time())
+        sender_transfer = {
+            "type": "send",
+            "target": target_qq,
+            "amount": amount,
+            "fee": fee,
+            "timestamp": timestamp
+        }
+        target_transfer = {
+            "type": "receive",
+            "target": event.get_sender_id(),
+            "amount": amount,
+            "fee": 0,
+            "timestamp": timestamp
+        }
+
+        sender.setdefault("transfer_history", []).insert(0, sender_transfer)
+        target.setdefault("transfer_history", []).insert(0, target_transfer)
+
+        # 保留最近20条记录
+        sender["transfer_history"] = sender["transfer_history"][:20]
+        target["transfer_history"] = target["transfer_history"][:20]
+
+        self._save_data()
+
+        sender_name = self._get_display_name(user_id)
+        target_name = self._get_display_name(target_id)
+
+        yield event.plain_result(
+            f"✅ 转账成功！\n"
+            f"💸 从 {sender_name} 转给 {target_name}\n"
+            f"💰 转账积分: {amount}\n"
+            f"💵 手续费: {fee} 积分 ({int(fee_rate * 100)}%)\n"
+            f"{self._format_amount_change(sender_before, sender['total_points'], '📊 你的余额')}\n"
+            f"{self._format_amount_change(target_before, target['total_points'], '📊 对方余额')}"
+        )
+
+    @filter.command("转账记录")
+    @handle_errors
+    async def transfer_history(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        """查看转账记录"""
         user_id = self._get_user_id(event)
         user_name = self._get_user_name(event)
         user = self._ensure_user(user_id, user_name)
-        message_text = event.message_str or ""
-        match = re.search(r"/(?:转账|转帐)\s+(\d+)\s+(\d+)", message_text)
-        if not match:
-            yield event.plain_result(
-                "❌ 参数格式错误！\n用法: /转账 QQ号 金额\n例如: /转账 123456789 100\n\n"
-                "💡 提示: 请使用对方的QQ号，不是昵称"
-            )
+        history = user.get("transfer_history", [])
+        if not history:
+            yield event.plain_result("📭 暂无转账记录。")
             return
-        target_qq = match.group(1)
-        amount_str = match.group(2)
-        try:
-            amount = int(amount_str)
-        except ValueError:
-            yield event.plain_result("❌ 金额格式错误，请输入数字。")
-            return
-        if amount <= 0:
-            yield event.plain_result("❌ 转账金额必须大于0。")
-            return
-        if user["total_points"] < amount:
-            yield event.plain_result(f"❌ 积分不足！\n你的积分: {user['total_points']}\n转账金额: {amount}")
-            return
-        target_id = None
-        target_display_name = None
-        for uid, u in self.user_data.items():
-            qq_part = uid.split(":")[-1] if ":" in uid else uid
-            if qq_part == target_qq:
-                target_id = uid
-                target_display_name = self._get_display_name(uid)
-                break
-        if not target_id:
-            yield event.plain_result(
-                f"❌ 未找到QQ号为 '{target_qq}' 的用户。\n对方需要先使用 /签到 注册账号。"
-            )
-            return
-        if target_id == user_id:
-            yield event.plain_result("❌ 不能转账给自己！")
-            return
-        user["total_points"] -= amount
-        self.user_data[target_id]["total_points"] += amount
-        self._save_data()
-        yield event.plain_result(
-            f"💸 转账成功！\n从: {self._get_display_name(user_id)}\n"
-            f"到: {target_display_name} (QQ:{target_qq})\n"
-            f"金额: {amount} 积分\n你的剩余积分: {user['total_points']}"
-        )
+        msg_lines = [f"📋 {self._get_display_name(user_id)} 的转账记录", ""]
+        for i, record in enumerate(history[:10], 1):
+            ts = record.get("timestamp", 0)
+            date_str = datetime.fromtimestamp(ts, TZ_BEIJING).strftime("%m-%d %H:%M") if ts else "未知时间"
+            if record["type"] == "send":
+                msg_lines.append(
+                    f"{i}. 📤 {date_str} 转给 {record['target']} {record['amount']}积分"
+                    f" (手续费{record.get('fee', 0)})"
+                )
+            else:
+                msg_lines.append(
+                    f"{i}. 📥 {date_str} 来自 {record['target']} {record['amount']}积分"
+                )
+        yield event.plain_result("\n".join(msg_lines))
 
     @filter.command("重置数据")
     @handle_errors
@@ -681,7 +906,7 @@ class SignInPlugin(Star):
     @handle_errors
     async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         msg = (
-            "📖 签到插件 v1.1.2 使用帮助\n\n"
+            "📖 签到插件 v1.2.0 使用帮助\n\n"
             "📝 签到指令:\n"
             "  /签到          - 每日签到，获取积分\n"
             "  /签到信息      - 查看个人签到详情\n"
@@ -694,15 +919,18 @@ class SignInPlugin(Star):
             "  /改名 <名称>   - 使用改名卡修改显示名\n"
             "  /补签          - 使用补签卡补签昨天\n"
             "  /抽奖          - 使用抽奖券参与积分抽奖\n\n"
-            "💸 其他指令:\n"
-            "  /转账 QQ号 金额  - 转账积分给其他用户（通过QQ号）\n"
+            "💸 转账指令:\n"
+            "  /转账 QQ号 金额  - 转账积分给其他用户\n"
+            "  /转账记录       - 查看转账历史\n\n"
+            "🔧 管理指令:\n"
             "  /重置数据        - 清除所有签到数据（管理员）\n\n"
             "✨ 功能说明:\n"
             "  • 每日签到可获得基础积分 + 连续加成 + 幸运奖励\n"
             "  • 积分可在商店购买道具\n"
             "  • 神秘礼盒和抽奖券每日限购1个\n"
-            "  • 抽奖有概率触发惩罚（扣分）\n"
+            "  • 抽奖有概率触发惩罚（扣分，但不会扣到负数）\n"
             "  • 连续签到加成有上限，断签会重置天数\n"
+            "  • 转账有手续费和冷却时间\n"
             "  • 数据自动保存，重启不丢失"
         )
         yield event.plain_result(msg)
