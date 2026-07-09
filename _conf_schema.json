@@ -59,7 +59,7 @@
     "default": true
   },
   "transfer_min_amount": {
-    "description": "最低转账金额",
+    "description": "最低转账积分",
     "type": "int",
     "default": 10
   },
