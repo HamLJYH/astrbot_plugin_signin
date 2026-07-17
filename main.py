@@ -886,11 +886,9 @@ class SignInPlugin(Star):
         yield event.plain_result("\n".join(msg_lines))
 
     @filter.command("重置数据")
+@filter.permission_type(filter.PermissionType.ADMIN)  # ✅ 框架自动处理权限
     @handle_errors
     async def reset_data(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        if not self._is_admin(event):
-            yield event.plain_result("🚫 权限不足！只有 AstrBot 管理员才能使用此指令。")
-            return
         if not self.user_data:
             yield event.plain_result("📭 当前没有任何签到数据。")
             return
