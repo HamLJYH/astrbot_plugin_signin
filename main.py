@@ -10,7 +10,7 @@ AstrBot 签到插件
 - 抽奖系统
 
 作者: HamLJYH
-版本: 1.2.0
+版本: 1.2.1
 日期: 2026-07-08
 """
 
@@ -169,7 +169,7 @@ class SignInPlugin(Star):
 
         self.user_data = self._load_data()
 
-        logger.info("签到插件 v1.2.0 已加载")
+        logger.info("签到插件 v1.2.1 已加载")
 
     def _parse_config(self, config: dict) -> SignInConfig:
         """解析插件配置"""
@@ -904,7 +904,7 @@ class SignInPlugin(Star):
     @handle_errors
     async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         msg = (
-            "📖 签到插件 v1.2.0 使用帮助\n\n"
+            "📖 签到插件 v1.2.1 使用帮助\n\n"
             "📝 签到指令:\n"
             "  /签到          - 每日签到，获取积分\n"
             "  /签到信息      - 查看个人签到详情\n"
