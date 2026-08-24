@@ -1,5 +1,11 @@
 # AstrBot 签到插件 
 
+![Version](https://img.shields.io/badge/v2.0.0-2.0.0-blue?style=flat-square&logo=github)
+![AstrBot](https://img.shields.io/badge/AstrBot-≥4.16-00D26A?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite-3.0+-003B57?style=flat-square&logo=sqlite&logoColor=white)
+![Features](https://img.shields.io/badge/功能-签到|商店|转账|道具-orange?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-F4D03F?style=flat-square)
+
 一个功能完善的 AstrBot 签到插件，支持每日签到、连续签到、积分排行、积分商店、道具系统、积分转账等功能。
 
 ## 功能特性
