@@ -28,7 +28,7 @@
 
 - AstrBot >= 4.16
 - Python >= 3.8
--aiosqlite>=0.19.0
+- aiosqlite>=0.19.0
 
 ### 安装步骤
 
