@@ -105,10 +105,6 @@ astrbot_plugin_signin/
 
 签到数据存储在 `AstrBot/data/plugin_data/astrbot_plugin_signin/signin_data.json` 中。
 
-## 许可证
-
-MIT License
-
 ---
 
 🙏致谢
