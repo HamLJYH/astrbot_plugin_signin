@@ -1,7 +1,7 @@
 """
 AstrBot 签到插件 - 配置模型模块 
 
-版本: 2.1.0
+版本: 2.0.1
 """
 
 from dataclasses import dataclass
