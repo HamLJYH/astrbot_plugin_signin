@@ -1,7 +1,7 @@
 """
-AstrBot 签到插件 - 配置模型模块
+AstrBot 签到插件 - 配置模型模块 
 
-版本: 2.0.0
+版本: 2.1.0
 """
 
 from dataclasses import dataclass
@@ -28,7 +28,6 @@ class PluginConfig:
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "PluginConfig":
-        """从字典创建配置实例"""
         return cls(
             base_points=config.get("base_points", 10),
             streak_bonus=config.get("streak_bonus", True),
@@ -47,7 +46,6 @@ class PluginConfig:
         )
 
     def validate(self) -> bool:
-        """验证配置有效性"""
         if self.base_points < 0:
             raise ValueError("基础积分不能为负数")
         if self.streak_bonus_rate < 0:
@@ -67,7 +65,6 @@ class PluginConfig:
         return True
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
         return {
             "base_points": self.base_points,
             "streak_bonus": self.streak_bonus,
