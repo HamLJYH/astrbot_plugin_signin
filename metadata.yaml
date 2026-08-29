@@ -5,6 +5,6 @@ version: "2.0.1"
 display_name: "签到系统"
 short_desc: "每日签到、积分商店、道具系统、积分转账"
 repo: https://github.com/HamLJYH/astrbot_plugin_signin
-astrbot_version: ">=4.16"
+astrbot_version: ">=4.26.0"
 support_platforms:
   - aiocqhttp
