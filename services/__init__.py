@@ -1,7 +1,5 @@
 """
-AstrBot 签到插件 - 服务模块
-
-版本: 2.0.0
+AstrBot 签到插件 - 服务模块 
 """
 
 from .database import DatabaseManager
