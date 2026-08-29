@@ -1,7 +1,7 @@
 # AstrBot 签到插件 
 
-![Version](https://img.shields.io/badge/v2.0.0-2.0.0-blue?style=flat-square&logo=github)
-![AstrBot](https://img.shields.io/badge/AstrBot-≥4.16-00D26A?style=flat-square)
+![Version](https://img.shields.io/badge/v2.0.0-2.0.1-blue?style=flat-square&logo=github)
+![AstrBot](https://img.shields.io/badge/AstrBot-≥4.26.0-00D26A?style=flat-square)
 ![SQLite](https://img.shields.io/badge/SQLite-3.0+-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Features](https://img.shields.io/badge/功能-签到|商店|转账|道具-orange?style=flat-square)
 
@@ -18,14 +18,12 @@
 - **道具系统** - 占卜卡、改名卡、补签卡、抽奖券、幸运符等
 - **积分转账** - 用户之间可以转账积分（会扣除一定的手续费）
 - **数据持久化** - 数据自动保存到本地，重启不丢失
-- **灵活配置** - 通过 WebUI 配置各项参数
-- **错误处理** - 统一的错误处理机制，友好提示
 
 ## 安装
 
 ### 前置要求
 
-- AstrBot >= 4.16
+- AstrBot >= 4.26
 - Python >= 3.8
 - aiosqlite>=0.19.0
 
@@ -38,11 +36,29 @@
 
 ```
 astrbot_plugin_signin/
-├── main.py              # 插件主文件
-├── metadata.yaml        # 插件元数据
-├── _conf_schema.json    # 配置项定义
-├── requirements.txt     # 依赖声明（本插件无额外依赖）
-└── README.md            # 说明文档
+├── main.py                 # 插件主文件
+├── metadata.yaml           # 插件元数据
+├── _conf_schema.json       # 配置项定义
+├── requirements.txt        # 依赖声明
+├── README.md               # 说明文档
+├── core/                   # 核心逻辑
+│   ├── __init__.py
+│   ├── config.py
+│   ├── constants.py
+│   └── models.py
+├── services/               # 服务层
+│   ├── __init__.py
+│   └── database.py
+├── utils/                  # 工具函数
+│   ├── __init__.py
+│   ├── decorators.py
+│   ├── helpers.py
+│   └── validators.py
+└── pages/                  # Web 管理面板
+    └── admin/              # 管理后台
+        ├── index.html
+        ├── app.js
+        └── style.css
 ```
 
 ## 使用指令
