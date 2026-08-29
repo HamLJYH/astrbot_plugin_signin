@@ -1,7 +1,7 @@
 """
-AstrBot 签到插件 - 装饰器工具模块
+AstrBot 签到插件 - 装饰器工具模块 
 
-版本: 2.0.0
+版本: 2.0.1
 """
 
 import functools
@@ -15,15 +15,10 @@ from ..core.constants import MessageEmoji
 
 
 def handle_errors(func: Callable) -> Callable:
-    """统一错误处理装饰器
-
-    捕获并处理函数执行过程中的各种异常，向用户返回友好的错误提示。
-    支持异步生成器（yield）和普通异步函数。
-    """
+    """统一错误处理装饰器"""
     @functools.wraps(func)
     async def wrapper(self, event: AstrMessageEvent, *args, **kwargs):
         try:
-            # 判断是否为异步生成器
             if hasattr(func, "__code__") and func.__code__.co_flags & 0x200:
                 async for result in func(self, event, *args, **kwargs):
                     yield result
