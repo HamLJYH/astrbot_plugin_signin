@@ -23,7 +23,7 @@
 
 ### 前置要求
 
-- AstrBot >= 4.26
+- AstrBot >= 4.26.0
 - Python >= 3.8
 - aiosqlite>=0.19.0
 
