@@ -52,7 +52,7 @@ class SignInPlugin(Star):
         self.db = DatabaseManager(PLUGIN_NAME)
         asyncio.create_task(self._init_database())
         self._register_web_apis()
-        logger.info(f"[{PLUGIN_NAME}] v2.1.0 已加载")
+        logger.info(f"[{PLUGIN_NAME}] v2.0.1 已加载")
 
     def _parse_config(self, config: Dict[str, Any]) -> PluginConfig:
         try:
@@ -688,7 +688,7 @@ class SignInPlugin(Star):
     @handle_errors
     async def signin_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         msg = (
-            f"📖 签到插件 v2.1.0 使用帮助\n\n"
+            f"📖 签到插件 v2.0.1 使用帮助\n\n"
             f"📝 签到指令:\n"
             f"  /签到          - 每日签到\n"
             f"  /签到信息      - 查看个人详情\n"
