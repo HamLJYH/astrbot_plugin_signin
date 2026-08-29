@@ -1,7 +1,7 @@
 """
-AstrBot 签到插件 - 数据模型模块
+AstrBot 签到插件 - 数据模型模块 
 
-版本: 2.0.0
+版本: 2.0.1
 """
 
 from dataclasses import dataclass, field
@@ -30,7 +30,6 @@ class UserData:
         return self.custom_name or self.name or "匿名用户"
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
         return {
             "user_id": self.user_id,
             "name": self.name,
@@ -45,7 +44,6 @@ class UserData:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserData":
-        """从字典创建"""
         return cls(
             user_id=data.get("user_id", ""),
             name=data.get("name", "匿名用户"),
