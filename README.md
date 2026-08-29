@@ -1,6 +1,6 @@
 # AstrBot 签到插件 
 
-![Version](https://img.shields.io/badge/v2.0.0-2.0.1-blue?style=flat-square&logo=github)
+![Version](https://img.shields.io/badge/v2.0.0-2.0.2-blue?style=flat-square&logo=github)
 ![AstrBot](https://img.shields.io/badge/AstrBot-≥4.26.0-00D26A?style=flat-square)
 ![SQLite](https://img.shields.io/badge/SQLite-3.0+-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Features](https://img.shields.io/badge/功能-签到|商店|转账|道具-orange?style=flat-square)
